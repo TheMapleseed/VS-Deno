@@ -259,6 +259,7 @@ import { serveDir } from "https://deno.land/std@0.204.0/http/file_server.ts";
 const portStr = Deno.env.get("DENO_PORT") || "8000";
 const port = Number.isNaN(Number(portStr)) ? 8000 : Number(portStr);
 const rootDir = ${escapedProjectDir};
+const sourceFile = Deno.env.get("DENO_LIVE_PREVIEW_FILE") || "";
 
 console.log(\`Starting Live Preview server...\`);
 console.log(\`Serving files from: \${rootDir}\`);
@@ -267,6 +268,30 @@ ${fileExt === '.html' ? `console.log(\`Opening: ${escapedFileName}\`);` : ''}
 
 // WebSocket connections for live reload
 const clients = new Set();
+
+// File watcher
+let watcher;
+try {
+  watcher = Deno.watchFs(rootDir);
+  console.log(\`Watching for file changes in: \${rootDir}\`);
+  
+  // Handle file changes
+  (async () => {
+    for await (const event of watcher) {
+      if (event.kind === "modify" || event.kind === "create") {
+        console.log(\`File changed: \${event.paths.join(", ")}\`);
+        // Notify all clients to reload
+        for (const client of clients) {
+          if (client.readyState === 1) {
+            client.send("reload");
+          }
+        }
+      }
+    }
+  })();
+} catch (err) {
+  console.error(\`Error setting up file watcher: \${err}\`);
+}
 
 serve(async (req) => {
   const url = new URL(req.url);
@@ -488,7 +513,9 @@ async function startLivePreview() {
         env: { 
           ...process.env, 
           DENO_PORT: port.toString(),
-          DENO_DIR: projectRoot || path.dirname(filePath)
+          DENO_DIR: projectRoot || path.dirname(filePath),
+          DENO_LIVE_PREVIEW: 'true',
+          DENO_LIVE_PREVIEW_FILE: filePath
         }
       });
 

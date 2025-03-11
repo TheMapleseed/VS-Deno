@@ -156,10 +156,11 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
     const csp = `
       default-src 'none'; 
       img-src ${webview.cspSource} https: http://localhost:* data:; 
-      style-src ${webview.cspSource} 'nonce-${nonce}'; 
-      script-src 'nonce-${nonce}'; 
+      style-src ${webview.cspSource} 'nonce-${nonce}' 'unsafe-inline'; 
+      script-src 'nonce-${nonce}' 'unsafe-eval'; 
       frame-src ${frameAncestors} http://localhost:* https:; 
       connect-src http://localhost:* ws://localhost:* wss://localhost:*;
+      font-src ${webview.cspSource} http://localhost:*;
       base-uri 'none';
       form-action 'none';
     `.replace(/\s+/g, ' ').trim();
@@ -442,8 +443,8 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
         <div class="preview-frame-container">
             ${this._previewUrl
                 ? `<iframe class="preview-frame" src="${this._previewUrl}?v=${this._refreshCounter}" 
-                    sandbox="allow-scripts allow-forms allow-same-origin allow-modals" 
-                    allow="clipboard-write"
+                    sandbox="allow-scripts allow-forms allow-same-origin allow-modals allow-downloads" 
+                    allow="clipboard-write; clipboard-read"
                     referrerpolicy="no-referrer"></iframe>
                   <div class="preview-overlay" id="loading-overlay">
                     <div class="preview-spinner">$(sync~spin)</div>
