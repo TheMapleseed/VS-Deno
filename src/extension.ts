@@ -805,24 +805,62 @@ async function startLivePreview() {
         lifecycle.beginStep(`${stepId}-launch-server`, 'Launch Server', 'Starting the Deno server process', stepId);
         logger.info(`Starting Deno process with server file: ${serverFilePath}`);
         
-        lifecycle.beginStep(`${stepId}-spawn-process`, 'Spawn Process', 'Spawning the Deno child process', `${stepId}-launch-server`);
-        denoProcess = child_process.spawn('deno', [
+        // Log the exact Deno command for debugging
+        const denoArgs = [
           'run',
-          '--allow-net',  // Need full net access for WebSockets
+          '--allow-net',
           '--allow-read=' + (projectRoot || path.dirname(filePath)),
-          '--allow-env',  // Need environment variables for configuration
-          '--unstable',   // Required for some WebSocket features
+          '--allow-env',
+          '--unstable',
           serverFilePath
-        ], {
-          env: { 
-            ...process.env, 
-            DENO_PORT: port.toString(),
-            DENO_DIR: projectRoot || path.dirname(filePath),
-            DENO_LIVE_PREVIEW: 'true',
-            DENO_LIVE_PREVIEW_FILE: filePath
+        ];
+        const denoEnv = { 
+          ...process.env, 
+          DENO_PORT: port.toString(),
+          DENO_DIR: projectRoot || path.dirname(filePath),
+          DENO_LIVE_PREVIEW: 'true',
+          DENO_LIVE_PREVIEW_FILE: filePath
+        };
+        
+        logger.debug(`Deno command: deno ${denoArgs.join(' ')}`, {
+          args: denoArgs,
+          env: {
+            DENO_PORT: denoEnv.DENO_PORT,
+            DENO_DIR: denoEnv.DENO_DIR,
+            DENO_LIVE_PREVIEW: denoEnv.DENO_LIVE_PREVIEW,
+            DENO_LIVE_PREVIEW_FILE: denoEnv.DENO_LIVE_PREVIEW_FILE
           }
         });
+        
+        lifecycle.beginStep(`${stepId}-spawn-process`, 'Spawn Process', 'Spawning the Deno child process', `${stepId}-launch-server`);
+        logger.info('Spawning Deno child process...');
+        
+        denoProcess = child_process.spawn('deno', denoArgs, { env: denoEnv });
+        
+        logger.info(`Deno process spawned with PID: ${denoProcess.pid || 'unknown'}`);
+        
         lifecycle.completeStep(`${stepId}-spawn-process`);
+        
+        // Log process events
+        if (denoProcess.stdout) {
+            denoProcess.stdout.on('data', (data) => {
+                logger.debug(`Deno stdout: ${data.toString().trim()}`);
+            });
+        }
+        
+        if (denoProcess.stderr) {
+            denoProcess.stderr.on('data', (data) => {
+                logger.warn(`Deno stderr: ${data.toString().trim()}`);
+            });
+        }
+        
+        denoProcess.on('error', (error) => {
+            logger.error(`Deno process error: ${error.message}`, error);
+        });
+        
+        denoProcess.on('exit', (code) => {
+            logger.info(`Deno process exited with code ${code}`);
+        });
 
         // Update status bar
         statusBarItem.text = "$(circle-slash) Stop Preview";
@@ -987,20 +1025,26 @@ function stopLivePreview() {
   
   try {
     if (denoProcess) {
+      const pid = denoProcess.pid || 'unknown';
       lifecycle.beginStep(`${stepId}-terminate`, 'Terminate Process', 'Terminating the Deno server process', stepId);
-      logger.debug('Terminating Deno process');
+      logger.info(`Terminating Deno process with PID: ${pid}`);
+      
+      // Log the current state of the process
+      logger.debug(`Deno process state before termination: killed=${denoProcess.killed}, exitCode=${denoProcess.exitCode}`);
+      
       // Kill the process gently first
       denoProcess.kill();
+      logger.debug(`Sent SIGTERM to Deno process ${pid}`);
       
       // Set a timeout to force kill if needed
       setTimeout(() => {
         if (denoProcess) {
           try {
+            logger.debug(`Process ${pid} still alive after SIGTERM, attempting force kill...`);
             process.kill(denoProcess.pid!);
-            logger.debug('Force killed Deno process');
+            logger.info(`Force killed Deno process ${pid}`);
           } catch (e) {
-            logger.debug('Process already terminated');
-            // Process already gone, ignore
+            logger.debug(`Process ${pid} already terminated or inaccessible`, e);
           }
         }
       }, 500);
