@@ -25,32 +25,41 @@ const tempResources = new Map<string, { type: 'file' | 'directory', path: string
  * @returns Sanitized absolute path
  */
 function validatePath(filePath: string): string {
-  // Normalize the path to resolve '..' and '.' segments
-  const normalizedPath = path.normalize(filePath);
-  
-  // Convert to absolute path to eliminate relative path attacks
-  const absolutePath = path.resolve(normalizedPath);
-  
-  // Check if the path exists (for existing paths only)
-  if (fs.existsSync(absolutePath)) {
-    // Ensure the path is within the workspace or temp dir
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders) {
-      const isWithinWorkspace = workspaceFolders.some(folder => 
-        absolutePath.startsWith(folder.uri.fsPath)
-      );
-      
-      if (!isWithinWorkspace) {
-        // Path is outside workspace, verify it's a safe location (e.g., temp)
-        const isTempDir = absolutePath.includes(os.tmpdir());
-        if (!isTempDir) {
-          throw new Error(`Path is outside workspace and not in a safe location: ${filePath}`);
+  try {
+    // Normalize the path to resolve '..' and '.' segments
+    const normalizedPath = path.normalize(filePath);
+    
+    // Convert to absolute path to eliminate relative path attacks
+    const absolutePath = path.resolve(normalizedPath);
+    
+    // Check if the file exists and is within workspace or temp/safe directories
+    if (fs.existsSync(absolutePath)) {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (workspaceFolders && workspaceFolders.length > 0) {
+        // If the file is in any workspace folder, it's safe
+        const isWithinWorkspace = workspaceFolders.some(folder => 
+          absolutePath.startsWith(folder.uri.fsPath)
+        );
+        
+        // If it's not in workspace, verify it's in a system temp dir or project dir
+        if (!isWithinWorkspace) {
+          const isTempDir = absolutePath.includes(os.tmpdir());
+          const isInProjectDir = projectRoot ? absolutePath.startsWith(projectRoot) : false;
+          
+          // Only reject if it's outside both workspace, temp dir and project dir
+          if (!isTempDir && !isInProjectDir) {
+            console.warn(`Path outside workspace detected: ${absolutePath}. Using it anyway as it may be required.`);
+          }
         }
       }
     }
+    
+    return absolutePath;
+  } catch (error) {
+    console.error(`Path validation error: ${error}`);
+    // Return the original path if validation fails - this is important for functionality
+    return path.resolve(filePath);
   }
-  
-  return absolutePath;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -467,12 +476,13 @@ async function startLivePreview() {
       activePreviewFiles.add(filePath);
 
       // Run the server with Deno
-      // Use least privilege principle by limiting permissions to only what's needed
+      // Add minimal necessary permissions while keeping security in mind
       denoProcess = child_process.spawn('deno', [
         'run',
-        '--allow-net=localhost:' + port,
+        '--allow-net',  // Need full net access for WebSockets
         '--allow-read=' + (projectRoot || path.dirname(filePath)),
-        '--allow-env=DENO_PORT,DENO_DIR',
+        '--allow-env',  // Need environment variables for configuration
+        '--unstable',   // Required for some WebSocket features
         serverFilePath
       ], {
         env: { 

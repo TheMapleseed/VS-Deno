@@ -152,14 +152,14 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
       frameAncestors = url.origin;
     }
     
-    // Improved CSP that removes unsafe-inline and adds nonce for styles
+    // Improved CSP that allows necessary connections while maintaining security
     const csp = `
       default-src 'none'; 
-      img-src ${webview.cspSource} https: http://localhost:*; 
+      img-src ${webview.cspSource} https: http://localhost:* data:; 
       style-src ${webview.cspSource} 'nonce-${nonce}'; 
       script-src 'nonce-${nonce}'; 
       frame-src ${frameAncestors} http://localhost:* https:; 
-      connect-src http://localhost:* ws://localhost:*;
+      connect-src http://localhost:* ws://localhost:* wss://localhost:*;
       base-uri 'none';
       form-action 'none';
     `.replace(/\s+/g, ' ').trim();
@@ -442,7 +442,7 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
         <div class="preview-frame-container">
             ${this._previewUrl
                 ? `<iframe class="preview-frame" src="${this._previewUrl}?v=${this._refreshCounter}" 
-                    sandbox="allow-scripts allow-forms allow-modals" 
+                    sandbox="allow-scripts allow-forms allow-same-origin allow-modals" 
                     allow="clipboard-write"
                     referrerpolicy="no-referrer"></iframe>
                   <div class="preview-overlay" id="loading-overlay">
