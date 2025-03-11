@@ -486,12 +486,29 @@ function stopLivePreview() {
   }
   
   if (denoProcess) {
-    // Kill the process
-    if (process.platform === 'win32') {
-      child_process.spawn('taskkill', ['/pid', denoProcess.pid!.toString(), '/f', '/t']);
-    } else {
-      denoProcess.kill('SIGTERM');
+    try {
+      // Kill the process more reliably across platforms
+      if (process.platform === 'win32') {
+        // On Windows, use taskkill to forcefully terminate the process and its children
+        child_process.spawn('taskkill', ['/pid', denoProcess.pid!.toString(), '/f', '/t']);
+      } else {
+        // On Unix-like systems, send SIGKILL for more reliable termination
+        denoProcess.kill('SIGKILL');
+        
+        // As a backup, also try killall on macOS and Linux
+        if (process.platform === 'darwin' || process.platform === 'linux') {
+          try {
+            // Attempt to kill any stray deno processes
+            child_process.spawn('killall', ['deno']);
+          } catch (err) {
+            // Ignore if killall fails
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`Error killing Deno process: ${err}`);
     }
+    
     denoProcess = undefined;
     
     // Clear active files list
@@ -523,5 +540,46 @@ async function checkDenoInstalled(): Promise<boolean> {
 }
 
 export function deactivate() {
+  // Stop the live preview and kill any running Deno processes
   stopLivePreview();
+  
+  // Clean up status bar items
+  if (statusBarItem) {
+    statusBarItem.dispose();
+  }
+  
+  if (autoStartStatusBarItem) {
+    autoStartStatusBarItem.dispose();
+  }
+  
+  // Dispose of the preview provider if it exists
+  if (previewProvider) {
+    previewProvider.dispose();
+    previewProvider = undefined;
+  }
+  
+  // Clear any debounce timers
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = undefined;
+  }
+  
+  // Clean up the active files tracking
+  activePreviewFiles.clear();
+  
+  // Clean up temporary directory if it exists
+  if (projectRoot) {
+    const tempDir = path.join(projectRoot, '.deno-live-preview');
+    if (fs.existsSync(tempDir)) {
+      try {
+        // Delete the temporary directory recursively
+        fs.rmdirSync(tempDir, { recursive: true });
+        console.log(`Cleaned up temporary directory: ${tempDir}`);
+      } catch (err) {
+        console.error(`Failed to remove temporary directory: ${err}`);
+      }
+    }
+  }
+  
+  console.log('Deno Live Preview extension deactivated and resources cleaned up');
 } 

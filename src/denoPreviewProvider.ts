@@ -104,6 +104,17 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Dispose of resources used by the preview provider
+   */
+  public dispose() {
+    // Clear all state
+    this.clearPreview();
+    
+    // Remove reference to the webview
+    this._view = undefined;
+  }
+
+  /**
    * Update the webview content
    */
   private _updateWebviewContent() {
