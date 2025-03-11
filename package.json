@@ -3,6 +3,7 @@
   "displayName": "Deno Live Preview",
   "description": "Run Deno TypeScript files with live preview",
   "version": "1.0.0",
+  "publisher": "TheMapleseedInc",
   "repository": {
     "type": "git",
     "url": "https://github.com/TheMapleseed/VS-Deno"
