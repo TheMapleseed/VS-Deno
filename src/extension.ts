@@ -6,10 +6,12 @@ import { DenoPreviewProvider } from './denoPreviewProvider';
 import * as os from 'os';
 import { Logger } from './logger';
 import { DiagnosticHelper } from './diagnostics';
+import { LifecycleTracker } from './lifecycle';
 
 // Initialize logger
 const logger = Logger.getInstance();
 const diagnostics = new DiagnosticHelper();
+const lifecycle = LifecycleTracker.getInstance();
 
 let denoProcess: child_process.ChildProcess | undefined;
 let previewProvider: DenoPreviewProvider | undefined;
@@ -70,80 +72,145 @@ function validatePath(filePath: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  lifecycle.beginStep('activate', 'Extension Activation', 'Starting the Deno Live Preview extension');
   logger.info('Activating Deno Live Preview extension');
   
-  // Run initial system check
-  diagnostics.runSystemCheck().then(status => {
-    logger.info('Initial diagnostic status:', status);
-  });
+  try {
+    // Run initial system check
+    lifecycle.beginStep('system-check', 'System Check', 'Checking system configuration and requirements');
+    diagnostics.runSystemCheck().then(status => {
+      logger.info('Initial diagnostic status:', status);
+      lifecycle.completeStep('system-check', `Diagnostics completed: Deno installed: ${status.denoInstalled}, WebSocket: ${status.websocketStatus}`);
+    }).catch(error => {
+      lifecycle.failStep('system-check', error instanceof Error ? error : String(error), 'Failed to complete system diagnostics');
+    });
 
-  // Create an instance of the preview provider
-  previewProvider = new DenoPreviewProvider(context.extensionUri);
-  
-  // Register the webview provider
-  const previewViewProvider = vscode.window.registerWebviewViewProvider(
-    DenoPreviewProvider.viewType,
-    previewProvider,
-    {
-      webviewOptions: {
-        retainContextWhenHidden: true,
+    // Initialize UI components
+    lifecycle.beginStep('ui-init', 'UI Initialization', 'Setting up the user interface components');
+    
+    try {
+      // Create an instance of the preview provider
+      lifecycle.beginStep('preview-provider-init', 'Preview Provider', 'Initializing the preview provider', 'ui-init');
+      previewProvider = new DenoPreviewProvider(context.extensionUri);
+      lifecycle.completeStep('preview-provider-init');
+      
+      // Register the webview provider
+      lifecycle.beginStep('register-webview', 'Register WebView', 'Registering the preview webview provider', 'ui-init');
+      const webviewProvider = vscode.window.registerWebviewViewProvider(
+        DenoPreviewProvider.viewType,
+        previewProvider,
+        {
+          webviewOptions: {
+            retainContextWhenHidden: true,
+          }
+        }
+      );
+      lifecycle.completeStep('register-webview');
+      
+      // Create status bar items
+      lifecycle.beginStep('status-bar-init', 'Status Bar Items', 'Creating status bar items', 'ui-init');
+      statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+      statusBarItem.text = "$(play) Start Preview";
+      statusBarItem.command = "deno-live-preview.start";
+      statusBarItem.tooltip = "Start Deno Live Preview";
+      statusBarItem.show();
+      
+      autoStartStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+      updateAutoStartStatusBar();
+      autoStartStatusBarItem.show();
+      
+      // Create diagnostics button in status bar
+      diagnosticsButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+      diagnosticsButton.text = "$(shield) Deno Diagnostics";
+      diagnosticsButton.command = "deno-live-preview.showDiagnostics";
+      diagnosticsButton.tooltip = "Show Deno Live Preview Diagnostics";
+      diagnosticsButton.show();
+      lifecycle.completeStep('status-bar-init');
+      
+      lifecycle.completeStep('ui-init');
+    } catch (error) {
+      lifecycle.failStep('ui-init', error instanceof Error ? error : String(error), 'Failed to initialize UI components');
+      throw error;
+    }
+
+    // Register commands
+    lifecycle.beginStep('register-commands', 'Register Commands', 'Registering extension commands');
+    try {
+      context.subscriptions.push(
+        vscode.commands.registerCommand('deno-live-preview.start', startLivePreview),
+        vscode.commands.registerCommand('deno-live-preview.stop', stopLivePreview),
+        vscode.commands.registerCommand('deno-live-preview.refresh', () => refreshPreview(true)),
+        vscode.commands.registerCommand('deno-live-preview.toggleAutoStart', toggleAutoStart),
+        vscode.commands.registerCommand('deno-live-preview.showDiagnostics', showDiagnostics),
+        vscode.commands.registerCommand('deno-live-preview.runTroubleshooter', runTroubleshooter),
+        vscode.commands.registerCommand('deno-live-preview.showLifecycleReport', () => lifecycle.showReportWebview()),
+        previewProvider,
+        statusBarItem,
+        autoStartStatusBarItem,
+        diagnosticsButton
+      );
+      lifecycle.completeStep('register-commands');
+    } catch (error) {
+      lifecycle.failStep('register-commands', error instanceof Error ? error : String(error), 'Failed to register commands');
+      throw error;
+    }
+    
+    // Add event listeners
+    lifecycle.beginStep('register-events', 'Register Events', 'Setting up event listeners');
+    try {
+      // Add document change listener for auto-refresh
+      vscode.workspace.onDidSaveTextDocument((document) => {
+        // Only refresh preview if auto-refresh is enabled
+        const config = vscode.workspace.getConfiguration('denoLivePreview');
+        if (config.get<boolean>('autoRefresh', true) && activePreviewFiles.has(document.uri.fsPath)) {
+          logger.debug(`Document saved: ${document.uri.fsPath}, triggering refresh`);
+          refreshPreview();
+        }
+      });
+      lifecycle.completeStep('register-events');
+    } catch (error: unknown) {
+      lifecycle.failStep(
+        'register-events', 
+        error ? (error instanceof Error ? error : String(error)) : undefined, 
+        'Failed to register event handlers'
+      );
+      throw error;
+    }
+    
+    // Auto-start preview if configured
+    lifecycle.beginStep('auto-start-check', 'Auto-start Check', 'Checking if auto-start is enabled');
+    try {
+      const activeEditor = vscode.window.activeTextEditor;
+      if (activeEditor && isPreviewableFile(activeEditor.document)) {
+        const config = vscode.workspace.getConfiguration('denoLivePreview');
+        if (config.get<boolean>('autoStart', false)) {
+          logger.debug('Auto-starting preview for active editor');
+          lifecycle.beginStep('auto-start', 'Auto-start Preview', 'Starting preview automatically for active editor', 'auto-start-check');
+          startLivePreview().then(() => {
+            lifecycle.completeStep('auto-start');
+          }).catch(error => {
+            lifecycle.failStep('auto-start', error instanceof Error ? error : String(error), 'Failed to auto-start preview');
+          });
+        } else {
+          lifecycle.completeStep('auto-start-check', 'Auto-start is disabled in settings');
+        }
+      } else {
+        lifecycle.completeStep('auto-start-check', 'No compatible file is active');
       }
+    } catch (error) {
+      lifecycle.failStep('auto-start-check', error instanceof Error ? error : String(error), 'Error during auto-start check');
     }
-  );
-  
-  // Create status bar items
-  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.text = "$(play) Start Preview";
-  statusBarItem.command = "deno-live-preview.start";
-  statusBarItem.tooltip = "Start Deno Live Preview";
-  statusBarItem.show();
-  
-  autoStartStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  updateAutoStartStatusBar();
-  autoStartStatusBarItem.show();
-  
-  // Create diagnostics button in status bar
-  diagnosticsButton = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
-  diagnosticsButton.text = "$(shield) Deno Diagnostics";
-  diagnosticsButton.command = "deno-live-preview.showDiagnostics";
-  diagnosticsButton.tooltip = "Show Deno Live Preview Diagnostics";
-  diagnosticsButton.show();
-
-  // Register commands
-  context.subscriptions.push(
-    vscode.commands.registerCommand('deno-live-preview.start', startLivePreview),
-    vscode.commands.registerCommand('deno-live-preview.stop', stopLivePreview),
-    vscode.commands.registerCommand('deno-live-preview.refresh', () => refreshPreview(true)),
-    vscode.commands.registerCommand('deno-live-preview.toggleAutoStart', toggleAutoStart),
-    vscode.commands.registerCommand('deno-live-preview.showDiagnostics', showDiagnostics),
-    vscode.commands.registerCommand('deno-live-preview.runTroubleshooter', runTroubleshooter),
-    previewViewProvider,
-    statusBarItem,
-    autoStartStatusBarItem,
-    diagnosticsButton
-  );
-  
-  // Add document change listener for auto-refresh
-  vscode.workspace.onDidSaveTextDocument((document) => {
-    // Only refresh preview if auto-refresh is enabled
-    const config = vscode.workspace.getConfiguration('denoLivePreview');
-    if (config.get<boolean>('autoRefresh', true) && activePreviewFiles.has(document.uri.fsPath)) {
-      logger.debug(`Document saved: ${document.uri.fsPath}, triggering refresh`);
-      refreshPreview();
-    }
-  });
-  
-  // Auto-start preview for active editor if configured
-  const activeEditor = vscode.window.activeTextEditor;
-  if (activeEditor && isPreviewableFile(activeEditor.document)) {
-    const config = vscode.workspace.getConfiguration('denoLivePreview');
-    if (config.get<boolean>('autoStart', false)) {
-      logger.debug('Auto-starting preview for active editor');
-      startLivePreview();
-    }
+    
+    logger.info('Deno Live Preview extension activated');
+    lifecycle.completeStep('activate', 'Extension activated successfully');
+  } catch (error: unknown) {
+    logger.critical('Failed to activate extension', error);
+    lifecycle.failStep(
+      'activate', 
+      error ? (error instanceof Error ? error : String(error)) : undefined, 
+      'Critical error during extension activation'
+    );
   }
-  
-  logger.info('Deno Live Preview extension activated');
 }
 
 // Update the preview when changes are detected or manually requested
@@ -623,185 +690,258 @@ function cleanupTempResources(): void {
 }
 
 async function startLivePreview() {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    logger.warn('No active editor found when trying to start preview');
-    vscode.window.showErrorMessage('No active editor found');
-    return;
-  }
-
-  const document = editor.document;
-  if (!isPreviewableFile(document)) {
-    logger.warn(`File type not supported for preview: ${document.uri.fsPath}`);
-    vscode.window.showErrorMessage('Not a supported file type for preview');
-    return;
-  }
-
-  // Save the current file
-  logger.debug('Saving current file before starting preview');
-  await document.save();
+  const stepId = 'start-preview-' + Date.now(); 
+  lifecycle.beginStep(stepId, 'Start Live Preview', 'Starting the live preview server');
   
   try {
-    const filePath = validatePath(document.uri.fsPath);
-    
-    // Determine project root
-    projectRoot = detectProjectRoot(filePath);
-    logger.info(`Starting Live Preview for ${filePath}, project root: ${projectRoot}`);
-    
-    // Check if Deno is installed
-    try {
-      const isDenoInstalled = await diagnostics.checkDenoInstalled();
-      
-      if (!isDenoInstalled) {
-        logger.error('Deno is not installed or not found in PATH');
-        vscode.window.showErrorMessage('Deno is not installed or not in the PATH. Please install Deno first.');
-        return;
-      }
-    } catch (error) {
-      logger.error('Error checking Deno installation', error);
-      vscode.window.showErrorMessage('Deno is not installed or not in the PATH. Please install Deno first.');
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      logger.warn('No active editor found when trying to start preview');
+      lifecycle.failStep(stepId, 'No active editor', 'Cannot start preview without an active editor');
+      vscode.window.showErrorMessage('No active editor found');
       return;
     }
 
-    // Run diagnostics on project path
-    await diagnostics.runSystemCheck(projectRoot);
-
-    // Get port from configuration
-    const config = vscode.workspace.getConfiguration('denoLivePreview');
-    const port = config.get<number>('port') || 8000;
-
-    // Check if port is available
-    const isPortInUse = await diagnostics.isPortInUse(port);
-    if (isPortInUse) {
-      logger.warn(`Port ${port} is already in use, might cause issues`);
+    const document = editor.document;
+    if (!isPreviewableFile(document)) {
+      logger.warn(`File type not supported for preview: ${document.uri.fsPath}`);
+      lifecycle.failStep(stepId, 'Unsupported file type', `File type ${path.extname(document.uri.fsPath)} is not supported`);
+      vscode.window.showErrorMessage('Not a supported file type for preview');
+      return;
     }
 
-    // Stop any existing preview
-    stopLivePreview();
-
+    // Save the current file
+    logger.debug('Saving current file before starting preview');
+    lifecycle.beginStep(`${stepId}-save`, 'Save Document', 'Saving the current document before starting preview', stepId);
+    await document.save();
+    lifecycle.completeStep(`${stepId}-save`);
+    
     try {
-      const fileType = path.extname(filePath).toLowerCase();
-      let serverFilePath = filePath;
-      let tempServerFile = false;
-
-      // For HTML, CSS, JS files, or TS files without server code, create a temporary server
-      if (fileType === '.html' || fileType === '.css' || fileType === '.js' || 
-          (fileType === '.ts' && !fs.readFileSync(filePath, 'utf8').includes('serve('))) {
-        const serverCode = generateStaticServerCode(filePath);
-        if (serverCode) {
-          // Create a temporary directory and server file using our secure method
-          const tempDir = path.join(projectRoot || path.dirname(filePath), '.deno-live-preview');
-          
-          // Create the server file in the temporary directory
-          serverFilePath = createTempResource(tempDir, '_temp_server.ts', serverCode);
-          tempServerFile = true;
-          logger.debug(`Created temporary server file at ${serverFilePath}`);
+      lifecycle.beginStep(`${stepId}-validate`, 'Validate Path', 'Validating the file path', stepId);
+      const filePath = validatePath(document.uri.fsPath);
+      lifecycle.completeStep(`${stepId}-validate`, `Path validated: ${filePath}`);
+      
+      // Determine project root
+      lifecycle.beginStep(`${stepId}-project-root`, 'Detect Project Root', 'Detecting the project root directory', stepId);
+      projectRoot = detectProjectRoot(filePath);
+      logger.info(`Starting Live Preview for ${filePath}, project root: ${projectRoot}`);
+      lifecycle.completeStep(`${stepId}-project-root`, `Project root: ${projectRoot}`);
+      
+      // Check if Deno is installed
+      lifecycle.beginStep(`${stepId}-deno-check`, 'Check Deno Installation', 'Verifying Deno is installed', stepId);
+      try {
+        const isDenoInstalled = await diagnostics.checkDenoInstalled();
+        
+        if (!isDenoInstalled) {
+          logger.error('Deno is not installed or not found in PATH');
+          lifecycle.failStep(`${stepId}-deno-check`, 'Deno not installed', 'Deno executable could not be found in PATH');
+          vscode.window.showErrorMessage('Deno is not installed or not in the PATH. Please install Deno first.');
+          return;
         }
+        lifecycle.completeStep(`${stepId}-deno-check`, 'Deno is properly installed');
+      } catch (error) {
+        logger.error('Error checking Deno installation', error);
+        lifecycle.failStep(`${stepId}-deno-check`, error instanceof Error ? error : String(error), 'Error occurred while checking Deno installation');
+        vscode.window.showErrorMessage('Deno is not installed or not in the PATH. Please install Deno first.');
+        return;
       }
 
-      // Add file to active preview list
-      activePreviewFiles.add(filePath);
+      // Run diagnostics on project path
+      lifecycle.beginStep(`${stepId}-diagnostics`, 'Run Diagnostics', 'Running system diagnostics', stepId);
+      await diagnostics.runSystemCheck(projectRoot);
+      lifecycle.completeStep(`${stepId}-diagnostics`);
 
-      // Run the server with Deno
-      // Add minimal necessary permissions while keeping security in mind
-      logger.info(`Starting Deno process with server file: ${serverFilePath}`);
-      denoProcess = child_process.spawn('deno', [
-        'run',
-        '--allow-net',  // Need full net access for WebSockets
-        '--allow-read=' + (projectRoot || path.dirname(filePath)),
-        '--allow-env',  // Need environment variables for configuration
-        '--unstable',   // Required for some WebSocket features
-        serverFilePath
-      ], {
-        env: { 
-          ...process.env, 
-          DENO_PORT: port.toString(),
-          DENO_DIR: projectRoot || path.dirname(filePath),
-          DENO_LIVE_PREVIEW: 'true',
-          DENO_LIVE_PREVIEW_FILE: filePath
-        }
-      });
+      // Get port from configuration
+      lifecycle.beginStep(`${stepId}-port-check`, 'Check Port', 'Checking if the configured port is available', stepId);
+      const config = vscode.workspace.getConfiguration('denoLivePreview');
+      const port = config.get<number>('port') || 8000;
 
-      // Update status bar
-      statusBarItem.text = "$(circle-slash) Stop Preview";
-      statusBarItem.command = "deno-live-preview.stop";
-      
-      // Update diagnostics status
-      diagnostics.updateServerStatus(true);
+      // Check if port is available
+      const isPortInUse = await diagnostics.isPortInUse(port);
+      if (isPortInUse) {
+        logger.warn(`Port ${port} is already in use, might cause issues`);
+        lifecycle.completeStep(`${stepId}-port-check`, `Port ${port} is in use, may cause conflicts`);
+      } else {
+        lifecycle.completeStep(`${stepId}-port-check`, `Port ${port} is available`);
+      }
 
-      // Handle process output
-      denoProcess.stdout?.on('data', (data) => {
-        const output = data.toString();
-        logger.debug(`Server stdout: ${output.trim()}`);
-        previewProvider?.appendOutput(output);
-        
-        // Extract server URL from output
-        const urlMatch = output.match(/Server running at: (http:\/\/localhost:[0-9]+\/)/);
-        if (urlMatch && urlMatch[1]) {
-          const serverUrl = urlMatch[1];
-          logger.info(`Server started at ${serverUrl}`);
+      // Stop any existing preview
+      lifecycle.beginStep(`${stepId}-stop-existing`, 'Stop Existing Preview', 'Stopping any existing preview', stepId);
+      stopLivePreview();
+      lifecycle.completeStep(`${stepId}-stop-existing`);
+
+      try {
+        lifecycle.beginStep(`${stepId}-prepare-server`, 'Prepare Server', 'Preparing the server files', stepId);
+        const fileType = path.extname(filePath).toLowerCase();
+        let serverFilePath = filePath;
+        let tempServerFile = false;
+
+        // For HTML, CSS, JS files, or TS files without server code, create a temporary server
+        if (fileType === '.html' || fileType === '.css' || fileType === '.js' || 
+            (fileType === '.ts' && !fs.readFileSync(filePath, 'utf8').includes('serve('))) {
+          lifecycle.beginStep(`${stepId}-generate-server`, 'Generate Server Code', 'Generating static server code', `${stepId}-prepare-server`);
+          const serverCode = generateStaticServerCode(filePath);
+          lifecycle.completeStep(`${stepId}-generate-server`);
           
-          // For HTML files, directly open the file
-          if (fileType === '.html') {
-            const relativePath = path.relative(projectRoot || path.dirname(filePath), filePath);
-            // Ensure URL path separators are correct
-            const urlPath = relativePath.split(path.sep).join('/');
-            const fullUrl = `${serverUrl}${urlPath}`;
-            previewProvider?.setPreviewUrl(fullUrl);
-          } else {
-            // For other file types, just use the server root
-            previewProvider?.setPreviewUrl(serverUrl);
-          }
-          
-          // Set the active file in the preview
-          previewProvider?.setActiveFile(filePath);
-          
-          // Set up file watcher for the project
-          if (projectRoot) {
-            setupFileWatcher(projectRoot);
+          if (serverCode) {
+            // Create a temporary directory and server file using our secure method
+            lifecycle.beginStep(`${stepId}-create-temp`, 'Create Temp Server', 'Creating temporary server file', `${stepId}-prepare-server`);
+            const tempDir = path.join(projectRoot || path.dirname(filePath), '.deno-live-preview');
+            
+            // Create the server file in the temporary directory
+            serverFilePath = createTempResource(tempDir, '_temp_server.ts', serverCode);
+            tempServerFile = true;
+            logger.debug(`Created temporary server file at ${serverFilePath}`);
+            lifecycle.completeStep(`${stepId}-create-temp`, `Temporary server file created at ${serverFilePath}`);
           }
         }
-      });
+        lifecycle.completeStep(`${stepId}-prepare-server`);
 
-      denoProcess.stderr?.on('data', (data) => {
-        const errorOutput = data.toString();
-        logger.error(`Server stderr: ${errorOutput.trim()}`);
-        previewProvider?.appendOutput(errorOutput);
-      });
+        // Add file to active preview list
+        activePreviewFiles.add(filePath);
 
-      denoProcess.on('close', (code, signal) => {
-        diagnostics.logProcessExit(code, signal);
-        previewProvider?.appendOutput(`Server process exited with code ${code}\n`);
+        // Run the server with Deno
+        // Add minimal necessary permissions while keeping security in mind
+        lifecycle.beginStep(`${stepId}-launch-server`, 'Launch Server', 'Starting the Deno server process', stepId);
+        logger.info(`Starting Deno process with server file: ${serverFilePath}`);
         
-        // Set status back to stopped
-        diagnostics.updateServerStatus(false);
-        
-        // Clean up temp server file if needed
-        if (tempServerFile && fs.existsSync(serverFilePath)) {
-          try {
-            fs.unlinkSync(serverFilePath);
-            logger.debug(`Cleaned up temporary server file: ${serverFilePath}`);
-          } catch (e) {
-            logger.error(`Failed to clean up temporary server file: ${serverFilePath}`, e);
+        lifecycle.beginStep(`${stepId}-spawn-process`, 'Spawn Process', 'Spawning the Deno child process', `${stepId}-launch-server`);
+        denoProcess = child_process.spawn('deno', [
+          'run',
+          '--allow-net',  // Need full net access for WebSockets
+          '--allow-read=' + (projectRoot || path.dirname(filePath)),
+          '--allow-env',  // Need environment variables for configuration
+          '--unstable',   // Required for some WebSocket features
+          serverFilePath
+        ], {
+          env: { 
+            ...process.env, 
+            DENO_PORT: port.toString(),
+            DENO_DIR: projectRoot || path.dirname(filePath),
+            DENO_LIVE_PREVIEW: 'true',
+            DENO_LIVE_PREVIEW_FILE: filePath
           }
-        }
-        
-        // Reset status bar if this wasn't a restart
-        if (denoProcess === undefined) {
-          statusBarItem.text = "$(play) Start Preview";
-          statusBarItem.command = "deno-live-preview.start";
-        }
-      });
+        });
+        lifecycle.completeStep(`${stepId}-spawn-process`);
 
-      vscode.window.showInformationMessage(`Live Preview started on port ${port}`);
-      
-    } catch (error) {
-      logger.error('Error starting live preview', error);
-      vscode.window.showErrorMessage(`Failed to start Live Preview: ${error}`);
+        // Update status bar
+        statusBarItem.text = "$(circle-slash) Stop Preview";
+        statusBarItem.command = "deno-live-preview.stop";
+        
+        // Update diagnostics status
+        diagnostics.updateServerStatus(true);
+
+        // Setup event handlers for the server process
+        lifecycle.beginStep(`${stepId}-setup-handlers`, 'Setup Process Handlers', 'Setting up handlers for process events', `${stepId}-launch-server`);
+        
+        // Handle process output
+        denoProcess.stdout?.on('data', (data) => {
+          const output = data.toString();
+          logger.debug(`Server stdout: ${output.trim()}`);
+          previewProvider?.appendOutput(output);
+          
+          // Extract server URL from output
+          const urlMatch = output.match(/Server running at: (http:\/\/localhost:[0-9]+\/)/);
+          if (urlMatch && urlMatch[1]) {
+            const serverUrl = urlMatch[1];
+            logger.info(`Server started at ${serverUrl}`);
+            lifecycle.completeStep(`${stepId}-launch-server`, `Server started at ${serverUrl}`);
+            
+            lifecycle.beginStep(`${stepId}-setup-preview`, 'Setup Preview', 'Setting up the preview panel', stepId);
+            // For HTML files, directly open the file
+            if (fileType === '.html') {
+              const relativePath = path.relative(projectRoot || path.dirname(filePath), filePath);
+              // Ensure URL path separators are correct
+              const urlPath = relativePath.split(path.sep).join('/');
+              const fullUrl = `${serverUrl}${urlPath}`;
+              previewProvider?.setPreviewUrl(fullUrl);
+            } else {
+              // For other file types, just use the server root
+              previewProvider?.setPreviewUrl(serverUrl);
+            }
+            
+            // Set the active file in the preview
+            previewProvider?.setActiveFile(filePath);
+            lifecycle.completeStep(`${stepId}-setup-preview`);
+            
+            // Set up file watcher for the project
+            lifecycle.beginStep(`${stepId}-file-watcher`, 'Setup File Watcher', 'Setting up file watchers for auto-refresh', stepId);
+            if (projectRoot) {
+              setupFileWatcher(projectRoot);
+            }
+            lifecycle.completeStep(`${stepId}-file-watcher`);
+          }
+        });
+
+        denoProcess.stderr?.on('data', (data) => {
+          const errorOutput = data.toString();
+          logger.error(`Server stderr: ${errorOutput.trim()}`);
+          previewProvider?.appendOutput(errorOutput);
+          
+          // Don't fail the step yet, as stderr might contain warnings that don't prevent operation
+        });
+
+        denoProcess.on('close', (code, signal) => {
+          diagnostics.logProcessExit(code, signal);
+          previewProvider?.appendOutput(`Server process exited with code ${code}\n`);
+          
+          if (code !== 0 && code !== null) {
+            lifecycle.failStep(`${stepId}-launch-server`, `Process exited with code ${code}`, `Server process terminated abnormally with code ${code}, signal: ${signal}`);
+          }
+          
+          // Set status back to stopped
+          diagnostics.updateServerStatus(false);
+          
+          // Clean up temp server file if needed
+          if (tempServerFile && fs.existsSync(serverFilePath)) {
+            try {
+              fs.unlinkSync(serverFilePath);
+              logger.debug(`Cleaned up temporary server file: ${serverFilePath}`);
+            } catch (e) {
+              logger.error(`Failed to clean up temporary server file: ${serverFilePath}`, e);
+            }
+          }
+          
+          // Reset status bar if this wasn't a restart
+          if (denoProcess === undefined) {
+            statusBarItem.text = "$(play) Start Preview";
+            statusBarItem.command = "deno-live-preview.start";
+          }
+        });
+        
+        lifecycle.completeStep(`${stepId}-setup-handlers`);
+
+        // Complete the main start preview step once we've set up everything
+        // The server will continue running asynchronously
+        lifecycle.completeStep(stepId, `Live Preview started on port ${port}`);
+        vscode.window.showInformationMessage(`Live Preview started on port ${port}`);
+        
+      } catch (error: unknown) {
+        logger.error('Error starting live preview', error);
+        lifecycle.failStep(
+          stepId, 
+          error ? (error instanceof Error ? error : String(error)) : undefined, 
+          'Error occurred while starting preview server'
+        );
+        vscode.window.showErrorMessage(`Failed to start Live Preview: ${error}`);
+      }
+    } catch (error: unknown) {
+      logger.error('Error in Live Preview startup', error);
+      lifecycle.failStep(
+        stepId, 
+        error ? (error instanceof Error ? error : String(error)) : undefined, 
+        'Error in overall Live Preview startup process'
+      );
+      vscode.window.showErrorMessage(`Error in Live Preview: ${error}`);
     }
-  } catch (error) {
-    logger.error('Error in Live Preview startup', error);
-    vscode.window.showErrorMessage(`Error in Live Preview: ${error}`);
+  } catch (error: unknown) {
+    logger.error('Unexpected error in Live Preview', error);
+    lifecycle.failStep(
+      stepId, 
+      error ? (error instanceof Error ? error : String(error)) : undefined, 
+      'Unexpected error occurred'
+    );
+    throw error;
   }
 }
 
@@ -840,59 +980,82 @@ function setupFileWatcher(projectPath: string) {
 }
 
 function stopLivePreview() {
+  const stepId = 'stop-preview-' + Date.now();
+  lifecycle.beginStep(stepId, 'Stop Live Preview', 'Stopping the live preview server');
+  
   logger.info('Stopping live preview');
   
-  if (denoProcess) {
-    logger.debug('Terminating Deno process');
-    // Kill the process gently first
-    denoProcess.kill();
-    
-    // Set a timeout to force kill if needed
-    setTimeout(() => {
-      if (denoProcess) {
-        try {
-          process.kill(denoProcess.pid!);
-          logger.debug('Force killed Deno process');
-        } catch (e) {
-          logger.debug('Process already terminated');
-          // Process already gone, ignore
+  try {
+    if (denoProcess) {
+      lifecycle.beginStep(`${stepId}-terminate`, 'Terminate Process', 'Terminating the Deno server process', stepId);
+      logger.debug('Terminating Deno process');
+      // Kill the process gently first
+      denoProcess.kill();
+      
+      // Set a timeout to force kill if needed
+      setTimeout(() => {
+        if (denoProcess) {
+          try {
+            process.kill(denoProcess.pid!);
+            logger.debug('Force killed Deno process');
+          } catch (e) {
+            logger.debug('Process already terminated');
+            // Process already gone, ignore
+          }
         }
-      }
-    }, 500);
+      }, 500);
+      
+      denoProcess = undefined;
+      lifecycle.completeStep(`${stepId}-terminate`);
+    }
     
-    denoProcess = undefined;
+    // Stop file watcher
+    if (fileWatcher) {
+      lifecycle.beginStep(`${stepId}-watcher`, 'Dispose File Watcher', 'Disposing the file watcher', stepId);
+      logger.debug('Disposing file watcher');
+      fileWatcher.dispose();
+      fileWatcher = undefined;
+      lifecycle.completeStep(`${stepId}-watcher`);
+    }
+    
+    // Clear the active preview files
+    activePreviewFiles.clear();
+    
+    // Clean up temporary resources
+    lifecycle.beginStep(`${stepId}-cleanup`, 'Cleanup Resources', 'Cleaning up temporary resources', stepId);
+    logger.debug('Cleaning up temporary resources');
+    cleanupTempResources();
+    lifecycle.completeStep(`${stepId}-cleanup`);
+    
+    // Update status bar
+    statusBarItem.text = "$(play) Start Preview";
+    statusBarItem.command = "deno-live-preview.start";
+    
+    // Clear the preview provider
+    if (previewProvider) {
+      lifecycle.beginStep(`${stepId}-clear-preview`, 'Clear Preview', 'Clearing the preview panel', stepId);
+      logger.debug('Clearing preview provider');
+      previewProvider.clearPreview();
+      lifecycle.completeStep(`${stepId}-clear-preview`);
+    }
+    
+    // Update server status in diagnostics
+    diagnostics.updateServerStatus(false);
+    diagnostics.updateWebSocketStatus('disconnected');
+    
+    // Show notification
+    vscode.window.showInformationMessage('Live Preview was stopped');
+    
+    lifecycle.completeStep(stepId, 'Live Preview stopped successfully');
+  } catch (error: unknown) {
+    logger.error('Error stopping live preview', error);
+    lifecycle.failStep(
+      stepId, 
+      error ? (error instanceof Error ? error : String(error)) : undefined, 
+      'Error occurred while stopping the preview'
+    );
+    // Continue with deactivation even if there's an error
   }
-  
-  // Stop file watcher
-  if (fileWatcher) {
-    logger.debug('Disposing file watcher');
-    fileWatcher.dispose();
-    fileWatcher = undefined;
-  }
-  
-  // Clear the active preview files
-  activePreviewFiles.clear();
-  
-  // Clean up temporary resources
-  logger.debug('Cleaning up temporary resources');
-  cleanupTempResources();
-  
-  // Update status bar
-  statusBarItem.text = "$(play) Start Preview";
-  statusBarItem.command = "deno-live-preview.start";
-  
-  // Clear the preview provider
-  if (previewProvider) {
-    logger.debug('Clearing preview provider');
-    previewProvider.clearPreview();
-  }
-  
-  // Update server status in diagnostics
-  diagnostics.updateServerStatus(false);
-  diagnostics.updateWebSocketStatus('disconnected');
-  
-  // Show notification
-  vscode.window.showInformationMessage('Live Preview was stopped');
 }
 
 /**
@@ -920,13 +1083,28 @@ function runTroubleshooter() {
 }
 
 export function deactivate() {
+  lifecycle.beginStep('deactivate', 'Extension Deactivation', 'Deactivating the Deno Live Preview extension');
+  
   logger.info('Deactivating Deno Live Preview extension');
   
-  // Ensure all processes are stopped
-  stopLivePreview();
-  
-  // Clean up any remaining resources
-  cleanupTempResources();
-  
-  logger.info('Deno Live Preview extension deactivated');
+  try {
+    // Ensure all processes are stopped
+    lifecycle.beginStep('deactivate-stop', 'Stop Preview', 'Stopping any running preview', 'deactivate');
+    stopLivePreview();
+    lifecycle.completeStep('deactivate-stop');
+    
+    // Clean up any remaining resources
+    lifecycle.beginStep('deactivate-cleanup', 'Final Cleanup', 'Performing final resource cleanup', 'deactivate');
+    cleanupTempResources();
+    lifecycle.completeStep('deactivate-cleanup');
+    
+    // Dispose the lifecycle tracker itself
+    lifecycle.dispose();
+    
+    logger.info('Deno Live Preview extension deactivated');
+    // No need to complete the deactivate step as the lifecycle tracker is disposed
+  } catch (error) {
+    logger.error('Error during extension deactivation', error instanceof Error ? error.message : String(error));
+    // We can't use lifecycle.failStep here as we might have disposed it already
+  }
 } 
