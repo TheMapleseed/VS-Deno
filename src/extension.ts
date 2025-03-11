@@ -28,6 +28,8 @@ let activePreviewFiles: Set<string> = new Set();
 // Add a map to track temporary files and directories
 const tempResources = new Map<string, { type: 'file' | 'directory', path: string }>();
 
+let extensionContext: vscode.ExtensionContext;
+
 /**
  * Validates a file path to ensure it doesn't contain potentially malicious components
  * @param filePath The file path to validate
@@ -72,6 +74,8 @@ function validatePath(filePath: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  // Store the context in the global variable
+  extensionContext = context;
   lifecycle.beginStep('activate', 'Extension Activation', 'Starting the Deno Live Preview extension');
   logger.info('Activating Deno Live Preview extension');
   
@@ -808,16 +812,37 @@ async function startLivePreview() {
         // Log the exact Deno command for debugging
         const denoArgs = [
           'run',
-          '--allow-net',
+          // Use more specific network permissions
+          '--allow-net=localhost:' + port,
           '--allow-read=' + (projectRoot || path.dirname(filePath)),
-          '--allow-env',
+          // Limit environment variable access
+          '--allow-env=DENO_PORT,DENO_LIVE_PREVIEW,DENO_LIVE_PREVIEW_FILE',
           '--unstable',
           serverFilePath
         ];
+
+        // Create a dedicated cache directory for our extension
+        let extensionCacheDir: string;
+        try {
+          extensionCacheDir = path.join(extensionContext.globalStorageUri.fsPath, 'deno-cache');
+          
+          // Ensure the directory exists
+          if (!fs.existsSync(extensionCacheDir)) {
+            fs.mkdirSync(extensionCacheDir, { recursive: true });
+            logger.info(`Created dedicated Deno cache directory: ${extensionCacheDir}`);
+          }
+        } catch (err) {
+          // Fallback to a temporary directory if we can't use the extension storage
+          logger.warn(`Could not create cache in extension storage, using temp directory instead: ${err}`);
+          extensionCacheDir = path.join(os.tmpdir(), 'deno-live-preview-cache-' + Date.now());
+          fs.mkdirSync(extensionCacheDir, { recursive: true });
+        }
+        
         const denoEnv = { 
           ...process.env, 
           DENO_PORT: port.toString(),
-          DENO_DIR: projectRoot || path.dirname(filePath),
+          // Use a dedicated cache directory to avoid conflicts with Deno Language Server
+          DENO_DIR: extensionCacheDir,
           DENO_LIVE_PREVIEW: 'true',
           DENO_LIVE_PREVIEW_FILE: filePath
         };
