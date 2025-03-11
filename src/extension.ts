@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as child_process from 'child_process';
 import { DenoPreviewProvider } from './denoPreviewProvider';
+import * as os from 'os';
 
 let denoProcess: child_process.ChildProcess | undefined;
 let previewProvider: DenoPreviewProvider | undefined;
@@ -14,6 +15,43 @@ let debounceTimer: NodeJS.Timeout | undefined;
 
 // Track open preview for different file types
 let activePreviewFiles: Set<string> = new Set();
+
+// Add a map to track temporary files and directories
+const tempResources = new Map<string, { type: 'file' | 'directory', path: string }>();
+
+/**
+ * Validates a file path to ensure it doesn't contain potentially malicious components
+ * @param filePath The file path to validate
+ * @returns Sanitized absolute path
+ */
+function validatePath(filePath: string): string {
+  // Normalize the path to resolve '..' and '.' segments
+  const normalizedPath = path.normalize(filePath);
+  
+  // Convert to absolute path to eliminate relative path attacks
+  const absolutePath = path.resolve(normalizedPath);
+  
+  // Check if the path exists (for existing paths only)
+  if (fs.existsSync(absolutePath)) {
+    // Ensure the path is within the workspace or temp dir
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders) {
+      const isWithinWorkspace = workspaceFolders.some(folder => 
+        absolutePath.startsWith(folder.uri.fsPath)
+      );
+      
+      if (!isWithinWorkspace) {
+        // Path is outside workspace, verify it's a safe location (e.g., temp)
+        const isTempDir = absolutePath.includes(os.tmpdir());
+        if (!isTempDir) {
+          throw new Error(`Path is outside workspace and not in a safe location: ${filePath}`);
+        }
+      }
+    }
+  }
+  
+  return absolutePath;
+}
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('Deno Live Preview extension is now active');
@@ -146,35 +184,61 @@ function isPreviewableFile(document: vscode.TextDocument): boolean {
 
 // Detect the root directory containing the project files
 function detectProjectRoot(filePath: string): string {
-  // Start with the directory containing the file
-  let dir = path.dirname(filePath);
-  
-  // Look for common project markers
-  while (dir !== path.parse(dir).root) {
-    // Check for package.json, deno.json, or index.html as indicators of project root
-    if (fs.existsSync(path.join(dir, 'package.json')) ||
-        fs.existsSync(path.join(dir, 'deno.json')) ||
-        fs.existsSync(path.join(dir, 'index.html'))) {
-      return dir;
+  try {
+    // Make sure we're working with a validated path
+    const validatedPath = validatePath(filePath);
+    let dir = path.dirname(validatedPath);
+    
+    // Look for common project markers, but limit search depth
+    let searchDepth = 0;
+    const maxSearchDepth = 10; // Prevent infinite loops
+    
+    while (dir !== path.parse(dir).root && searchDepth < maxSearchDepth) {
+      // Check for package.json, deno.json, or index.html as indicators of project root
+      if (fs.existsSync(path.join(dir, 'package.json')) ||
+          fs.existsSync(path.join(dir, 'deno.json')) ||
+          fs.existsSync(path.join(dir, 'index.html'))) {
+        return dir;
+      }
+      
+      // Move up one directory
+      dir = path.dirname(dir);
+      searchDepth++;
     }
     
-    // Move up one directory
-    dir = path.dirname(dir);
+    // If no project markers found, return the directory of the file
+    return path.dirname(validatedPath);
+  } catch (error) {
+    console.error(`Error in detectProjectRoot: ${error}`);
+    // If we can't detect the project root, fallback to the file's directory
+    return path.dirname(filePath);
   }
-  
-  // If no project markers found, return the directory of the file
-  return path.dirname(filePath);
 }
 
 // Generate a simple static server based on the file type and project structure
 function generateStaticServerCode(filePath: string): string {
   const fileExt = path.extname(filePath).toLowerCase();
   const fileName = path.basename(filePath);
+  
+  // Sanitize inputs for use in the generated code
   const projectDir = projectRoot || path.dirname(filePath);
   
+  // Make sure our path is properly escaped for use in a string literal
+  // Replace backslashes with double backslashes and escape single quotes
+  const escapedProjectDir = JSON.stringify(projectDir);
+  const escapedFileName = JSON.stringify(fileName);
+  
   // If it's a TS file that already has server code, don't generate anything
-  if (fileExt === '.ts' && fs.readFileSync(filePath, 'utf8').includes('serve(')) {
-    return '';
+  if (fileExt === '.ts') {
+    try {
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      if (fileContent.includes('serve(')) {
+        return '';
+      }
+    } catch (error) {
+      console.error(`Error reading file: ${error}`);
+      return '';
+    }
   }
   
   return `
@@ -182,13 +246,15 @@ function generateStaticServerCode(filePath: string): string {
 import { serve } from "https://deno.land/std@0.204.0/http/server.ts";
 import { serveDir } from "https://deno.land/std@0.204.0/http/file_server.ts";
 
-const port = Number(Deno.env.get("DENO_PORT") || "8000");
-const rootDir = "${projectDir.replace(/\\/g, '\\\\')}";
+// Get configuration from environment variables with validation
+const portStr = Deno.env.get("DENO_PORT") || "8000";
+const port = Number.isNaN(Number(portStr)) ? 8000 : Number(portStr);
+const rootDir = ${escapedProjectDir};
 
 console.log(\`Starting Live Preview server...\`);
 console.log(\`Serving files from: \${rootDir}\`);
 console.log(\`Server running at: http://localhost:\${port}/\`);
-${fileExt === '.html' ? `console.log(\`Opening: ${fileName}\`);` : ''}
+${fileExt === '.html' ? `console.log(\`Opening: ${escapedFileName}\`);` : ''}
 
 // WebSocket connections for live reload
 const clients = new Set();
@@ -248,56 +314,97 @@ serve(async (req) => {
       const response = await serveDir(req, {
         fsRoot: rootDir,
         urlRoot: "",
-        showIndex: true,
-        quiet: true,
       });
       
       // Only process HTML responses
       if (response.headers.get("content-type")?.includes("text/html")) {
-        const originalHtml = await response.text();
+        const originalText = await response.text();
         
-        // Add the live reload script to the HTML
-        const injectedHtml = originalHtml.replace(
-          '</head>',
-          '<script src="/_lr_script.js"></script></head>'
-        );
-        
-        return new Response(injectedHtml, {
-          status: response.status,
-          headers: response.headers,
-        });
+        // Only inject if not already present
+        if (!originalText.includes("/_lr_script.js")) {
+          const injectedText = originalText.replace(
+            "</head>",
+            \`<script src="/_lr_script.js"></script></head>\`
+          );
+          
+          return new Response(injectedText, {
+            status: response.status,
+            headers: response.headers,
+          });
+        }
       }
       
       return response;
     } catch (e) {
       console.error("Error serving HTML:", e);
-      return new Response("Server Error", { status: 500 });
+      return new Response(\`Server error: \${e.message}\`, { status: 500 });
     }
   }
   
-  // Serve all other static files from the project directory
+  // Serve all other files normally
   return serveDir(req, {
     fsRoot: rootDir,
     urlRoot: "",
-    showIndex: true,
-    quiet: true,
-    headers: {
-      "cache-control": "no-cache, no-store, must-revalidate",
-    }
   });
 }, { port });
+`;
+}
 
-// Function to notify all clients to reload
-globalThis.notifyReload = () => {
-  for (const client of clients) {
-    try {
-      client.send("reload");
-    } catch (e) {
-      console.error("Failed to send reload command:", e);
+// Improved temporary file management
+function createTempResource(basePath: string, suffix: string, content?: string): string {
+  try {
+    // Ensure base directory exists with secure permissions
+    if (!fs.existsSync(basePath)) {
+      fs.mkdirSync(basePath, { recursive: true, mode: 0o700 });
+      tempResources.set(basePath, { type: 'directory', path: basePath });
+    }
+    
+    // Create a unique file path
+    const resourcePath = path.join(basePath, suffix);
+    
+    // If content provided, write to file with secure permissions
+    if (content !== undefined) {
+      fs.writeFileSync(resourcePath, content, { mode: 0o600 });
+      tempResources.set(resourcePath, { type: 'file', path: resourcePath });
+    }
+    
+    return resourcePath;
+  } catch (error) {
+    console.error(`Error creating temporary resource: ${error}`);
+    throw error;
+  }
+}
+
+// Function to safely clean up temporary resources
+function cleanupTempResources(): void {
+  // Process files first, then directories
+  // This ensures we don't try to delete directories before their contents
+  
+  // Delete files
+  for (const [key, resource] of tempResources.entries()) {
+    if (resource.type === 'file' && fs.existsSync(resource.path)) {
+      try {
+        fs.unlinkSync(resource.path);
+        console.log(`Deleted temporary file: ${resource.path}`);
+      } catch (err) {
+        console.error(`Failed to delete temporary file ${resource.path}: ${err}`);
+      }
+      tempResources.delete(key);
     }
   }
-};
-`;
+  
+  // Delete directories
+  for (const [key, resource] of tempResources.entries()) {
+    if (resource.type === 'directory' && fs.existsSync(resource.path)) {
+      try {
+        fs.rmdirSync(resource.path, { recursive: true });
+        console.log(`Deleted temporary directory: ${resource.path}`);
+      } catch (err) {
+        console.error(`Failed to delete temporary directory ${resource.path}: ${err}`);
+      }
+      tempResources.delete(key);
+    }
+  }
 }
 
 async function startLivePreview() {
@@ -315,133 +422,133 @@ async function startLivePreview() {
 
   // Save the current file
   await document.save();
-  const filePath = document.uri.fsPath;
   
-  // Determine project root
-  projectRoot = detectProjectRoot(filePath);
-  
-  // Check if Deno is installed
   try {
-    await checkDenoInstalled();
-  } catch (error) {
-    vscode.window.showErrorMessage('Deno is not installed or not in the PATH. Please install Deno first.');
-    return;
-  }
+    const filePath = validatePath(document.uri.fsPath);
+    
+    // Determine project root
+    projectRoot = detectProjectRoot(filePath);
+    
+    // Check if Deno is installed
+    try {
+      await checkDenoInstalled();
+    } catch (error) {
+      vscode.window.showErrorMessage('Deno is not installed or not in the PATH. Please install Deno first.');
+      return;
+    }
 
-  // Get port from configuration
-  const config = vscode.workspace.getConfiguration('denoLivePreview');
-  const port = config.get<number>('port') || 8000;
+    // Get port from configuration
+    const config = vscode.workspace.getConfiguration('denoLivePreview');
+    const port = config.get<number>('port') || 8000;
 
-  // Stop any existing preview
-  stopLivePreview();
+    // Stop any existing preview
+    stopLivePreview();
 
-  try {
-    const fileType = path.extname(filePath).toLowerCase();
-    let serverFilePath = filePath;
-    let tempServerFile = false;
+    try {
+      const fileType = path.extname(filePath).toLowerCase();
+      let serverFilePath = filePath;
+      let tempServerFile = false;
 
-    // For HTML, CSS, JS files, or TS files without server code, create a temporary server
-    if (fileType === '.html' || fileType === '.css' || fileType === '.js' || 
-        (fileType === '.ts' && !fs.readFileSync(filePath, 'utf8').includes('serve('))) {
-      const serverCode = generateStaticServerCode(filePath);
-      if (serverCode) {
-        // Create temporary server file
-        const tempDir = path.join(projectRoot || path.dirname(filePath), '.deno-live-preview');
-        if (!fs.existsSync(tempDir)) {
-          fs.mkdirSync(tempDir, { recursive: true });
+      // For HTML, CSS, JS files, or TS files without server code, create a temporary server
+      if (fileType === '.html' || fileType === '.css' || fileType === '.js' || 
+          (fileType === '.ts' && !fs.readFileSync(filePath, 'utf8').includes('serve('))) {
+        const serverCode = generateStaticServerCode(filePath);
+        if (serverCode) {
+          // Create a temporary directory and server file using our secure method
+          const tempDir = path.join(projectRoot || path.dirname(filePath), '.deno-live-preview');
+          
+          // Create the server file in the temporary directory
+          serverFilePath = createTempResource(tempDir, '_temp_server.ts', serverCode);
+          tempServerFile = true;
+        }
+      }
+
+      // Add file to active preview list
+      activePreviewFiles.add(filePath);
+
+      // Run the server with Deno
+      // Use least privilege principle by limiting permissions to only what's needed
+      denoProcess = child_process.spawn('deno', [
+        'run',
+        '--allow-net=localhost:' + port,
+        '--allow-read=' + (projectRoot || path.dirname(filePath)),
+        '--allow-env=DENO_PORT,DENO_DIR',
+        serverFilePath
+      ], {
+        env: { 
+          ...process.env, 
+          DENO_PORT: port.toString(),
+          DENO_DIR: projectRoot || path.dirname(filePath)
+        }
+      });
+
+      // Update status bar
+      statusBarItem.text = "$(circle-slash) Stop Preview";
+      statusBarItem.command = "deno-live-preview.stop";
+
+      // Handle process output
+      denoProcess.stdout?.on('data', (data) => {
+        console.log(`Deno stdout: ${data}`);
+        if (previewProvider) {
+          previewProvider.appendOutput(data.toString());
+        }
+      });
+
+      denoProcess.stderr?.on('data', (data) => {
+        console.error(`Deno stderr: ${data}`);
+        if (previewProvider) {
+          previewProvider.appendOutput(`ERROR: ${data.toString()}`);
+        }
+      });
+
+      denoProcess.on('error', (error) => {
+        vscode.window.showErrorMessage(`Failed to start server: ${error.message}`);
+        stopLivePreview();
+      });
+
+      denoProcess.on('close', (code) => {
+        console.log(`Deno process exited with code ${code}`);
+        
+        // Clean up temp file if necessary
+        if (tempServerFile && fs.existsSync(serverFilePath)) {
+          try {
+            fs.unlinkSync(serverFilePath);
+          } catch (err) {
+            console.error(`Failed to remove temporary server file: ${err}`);
+          }
         }
         
-        serverFilePath = path.join(tempDir, '_temp_server.ts');
-        fs.writeFileSync(serverFilePath, serverCode, 'utf8');
-        tempServerFile = true;
-      }
-    }
+        stopLivePreview();
+      });
 
-    // Add file to active preview list
-    activePreviewFiles.add(filePath);
+      // Set up file watcher for the project directory
+      setupFileWatcher(projectRoot || path.dirname(filePath));
 
-    // Run the server with Deno
-    denoProcess = child_process.spawn('deno', [
-      'run',
-      '--allow-net',
-      '--allow-read',
-      '--allow-env',
-      '--unstable',
-      serverFilePath
-    ], {
-      env: { 
-        ...process.env, 
-        DENO_PORT: port.toString(),
-        DENO_DIR: projectRoot || path.dirname(filePath)
-      }
-    });
-
-    // Update status bar
-    statusBarItem.text = "$(circle-slash) Stop Preview";
-    statusBarItem.command = "deno-live-preview.stop";
-
-    // Handle process output
-    denoProcess.stdout?.on('data', (data) => {
-      console.log(`Deno stdout: ${data}`);
+      // Show preview
       if (previewProvider) {
-        previewProvider.appendOutput(data.toString());
-      }
-    });
-
-    denoProcess.stderr?.on('data', (data) => {
-      console.error(`Deno stderr: ${data}`);
-      if (previewProvider) {
-        previewProvider.appendOutput(`ERROR: ${data.toString()}`);
-      }
-    });
-
-    denoProcess.on('error', (error) => {
-      vscode.window.showErrorMessage(`Failed to start server: ${error.message}`);
-      stopLivePreview();
-    });
-
-    denoProcess.on('close', (code) => {
-      console.log(`Deno process exited with code ${code}`);
-      
-      // Clean up temp file if necessary
-      if (tempServerFile && fs.existsSync(serverFilePath)) {
-        try {
-          fs.unlinkSync(serverFilePath);
-        } catch (err) {
-          console.error(`Failed to remove temporary server file: ${err}`);
+        // Determine URL based on file type
+        let previewUrl = `http://localhost:${port}`;
+        if (path.extname(filePath).toLowerCase() === '.html') {
+          // For HTML files, navigate directly to that file
+          const relativePath = path.relative(projectRoot || path.dirname(filePath), filePath);
+          previewUrl = `http://localhost:${port}/${relativePath.replace(/\\/g, '/')}`;
         }
+        
+        previewProvider.setPreviewUrl(previewUrl);
+        previewProvider.setActiveFile(filePath);
+        
+        // Open the webview panel
+        vscode.commands.executeCommand('workbench.view.extension.deno-live-preview-container');
       }
-      
-      stopLivePreview();
-    });
 
-    // Set up file watcher for the project directory
-    setupFileWatcher(projectRoot || path.dirname(filePath));
-
-    // Show preview
-    if (previewProvider) {
-      // Determine URL based on file type
-      let previewUrl = `http://localhost:${port}`;
-      if (path.extname(filePath).toLowerCase() === '.html') {
-        // For HTML files, navigate directly to that file
-        const relativePath = path.relative(projectRoot || path.dirname(filePath), filePath);
-        previewUrl = `http://localhost:${port}/${relativePath.replace(/\\/g, '/')}`;
-      }
-      
-      previewProvider.setPreviewUrl(previewUrl);
-      previewProvider.setActiveFile(filePath);
-      
-      // Open the webview panel
-      vscode.commands.executeCommand('workbench.view.extension.deno-live-preview-container');
+      vscode.window.showInformationMessage(`Live Preview started on port ${port}`);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to start preview: ${error instanceof Error ? error.message : String(error)}`);
+      return;
     }
-
-    vscode.window.showInformationMessage(`Live Preview started on port ${port}`);
   } catch (error) {
-    if (error instanceof Error) {
-      vscode.window.showErrorMessage(`Failed to start Live Preview: ${error.message}`);
-    } else {
-      vscode.window.showErrorMessage(`Failed to start Live Preview: ${String(error)}`);
-    }
+    vscode.window.showErrorMessage(`Invalid file path: ${error instanceof Error ? error.message : String(error)}`);
+    return;
   }
 }
 
@@ -511,6 +618,9 @@ function stopLivePreview() {
     
     denoProcess = undefined;
     
+    // Clean up all temporary resources
+    cleanupTempResources();
+    
     // Clear active files list
     activePreviewFiles.clear();
 
@@ -567,17 +677,19 @@ export function deactivate() {
   // Clean up the active files tracking
   activePreviewFiles.clear();
   
-  // Clean up temporary directory if it exists
-  if (projectRoot) {
-    const tempDir = path.join(projectRoot, '.deno-live-preview');
-    if (fs.existsSync(tempDir)) {
-      try {
-        // Delete the temporary directory recursively
+  // Perform thorough temp resource cleanup
+  cleanupTempResources();
+  
+  // Final cleanup of any remaining temp directories in workspace
+  if (projectRoot && fs.existsSync(projectRoot)) {
+    try {
+      const tempDir = path.join(projectRoot, '.deno-live-preview');
+      if (fs.existsSync(tempDir)) {
         fs.rmdirSync(tempDir, { recursive: true });
         console.log(`Cleaned up temporary directory: ${tempDir}`);
-      } catch (err) {
-        console.error(`Failed to remove temporary directory: ${err}`);
       }
+    } catch (err) {
+      console.error(`Failed to remove temporary directory: ${err}`);
     }
   }
   

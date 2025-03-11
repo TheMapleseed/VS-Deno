@@ -152,7 +152,17 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
       frameAncestors = url.origin;
     }
     
-    const csp = `default-src 'none'; img-src ${webview.cspSource} https: http://localhost:*; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; frame-src ${frameAncestors} http://localhost:* https:; connect-src http://localhost:* ws://localhost:*`;
+    // Improved CSP that removes unsafe-inline and adds nonce for styles
+    const csp = `
+      default-src 'none'; 
+      img-src ${webview.cspSource} https: http://localhost:*; 
+      style-src ${webview.cspSource} 'nonce-${nonce}'; 
+      script-src 'nonce-${nonce}'; 
+      frame-src ${frameAncestors} http://localhost:* https:; 
+      connect-src http://localhost:* ws://localhost:*;
+      base-uri 'none';
+      form-action 'none';
+    `.replace(/\s+/g, ' ').trim();
 
     const outputHtml = this._outputLines.map(line => {
       // Escape HTML
@@ -178,8 +188,8 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="${csp}">
-    <title>Live Preview</title>
-    <style>
+    <title>Deno Live Preview</title>
+    <style nonce="${nonce}">
         body {
             padding: 0;
             margin: 0;
@@ -431,7 +441,10 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
         </div>
         <div class="preview-frame-container">
             ${this._previewUrl
-                ? `<iframe class="preview-frame" src="${this._previewUrl}?v=${this._refreshCounter}" sandbox="allow-scripts allow-forms allow-same-origin allow-modals" allow="clipboard-read; clipboard-write;"></iframe>
+                ? `<iframe class="preview-frame" src="${this._previewUrl}?v=${this._refreshCounter}" 
+                    sandbox="allow-scripts allow-forms allow-modals" 
+                    allow="clipboard-write"
+                    referrerpolicy="no-referrer"></iframe>
                   <div class="preview-overlay" id="loading-overlay">
                     <div class="preview-spinner">$(sync~spin)</div>
                     <div>Loading...</div>
@@ -479,118 +492,118 @@ export class DenoPreviewProvider implements vscode.WebviewViewProvider {
             });
         }
         
-        // Handle refresh button click
-        if (refreshButton) {
-            refreshButton.addEventListener('click', () => {
-                vscode.postMessage({
-                    command: 'refresh'
-                });
-                
-                // This will be triggered by the extension calling refreshPreview()
-                // but we'll also show the overlay now for better UX
-                if (loadingOverlay) {
-                    loadingOverlay.classList.add('visible');
-                    setTimeout(() => {
-                        loadingOverlay.classList.remove('visible');
-                    }, 1000); // Hide after 1s if we don't get the load event
+        // Safe DOM update helper function
+        function setElementContent(element, content, asHtml = false) {
+            if (!element) return;
+            
+            if (asHtml) {
+                // For cases where we need HTML (use carefully)
+                // First clear the element
+                while (element.firstChild) {
+                    element.removeChild(element.firstChild);
                 }
-            });
-        }
-        
-        // Handle open in browser button
-        if (openBrowserButton && iframe) {
-            openBrowserButton.addEventListener('click', () => {
-                if (iframe.src) {
-                    vscode.postMessage({
-                        command: 'openInBrowser',
-                        url: iframe.src
-                    });
-                }
-            });
-        }
-        
-        // Handle clear output button
-        if (clearOutputButton) {
-            clearOutputButton.addEventListener('click', () => {
-                outputConsole.innerHTML = '<div class="placeholder">No output yet</div>';
-            });
-        }
-        
-        // Handle device selection buttons
-        deviceButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                // Remove active class from all buttons
-                deviceButtons.forEach(btn => btn.classList.remove('active'));
                 
-                // Add active class to clicked button
-                button.classList.add('active');
+                // Create a document fragment from the sanitized HTML
+                const template = document.createElement('template');
                 
-                // Update iframe dimensions
-                if (iframe) {
-                    const width = button.dataset.width;
-                    const height = button.dataset.height;
+                // Sanitize content - simple version
+                const sanitized = content
+                    .replace(/javascript:/gi, '')
+                    .replace(/data:/gi, '')
+                    .replace(/on\w+=/gi, '');
                     
-                    iframe.style.width = width;
-                    iframe.style.height = height;
-                    
-                    // Center if not responsive
-                    if (width !== '100%') {
-                        iframe.style.marginLeft = 'auto';
-                        iframe.style.marginRight = 'auto';
-                        iframe.style.display = 'block';
-                    } else {
-                        iframe.style.marginLeft = '';
-                        iframe.style.marginRight = '';
-                    }
-                }
-            });
+                template.innerHTML = sanitized;
+                element.appendChild(template.content);
+            } else {
+                // For text content - safer option
+                element.textContent = content;
+            }
+        }
+        
+        // Refresh button
+        refreshButton?.addEventListener('click', () => {
+            // Notify extension to refresh
+            vscode.postMessage({ command: 'refresh' });
+            
+            // Show loading overlay
+            if (loadingOverlay) {
+                loadingOverlay.classList.add('visible');
+            }
+            
+            // Reload iframe if it exists
+            if (iframe) {
+                iframe.src = iframe.src;
+            }
         });
         
+        // Open in browser button
+        openBrowserButton?.addEventListener('click', () => {
+            vscode.postMessage({ command: 'openInBrowser' });
+        });
+        
+        // Clear output button
+        clearOutputButton?.addEventListener('click', () => {
+            // Use safe DOM manipulation
+            if (outputConsole) {
+                while (outputConsole.firstChild) {
+                    outputConsole.removeChild(outputConsole.firstChild);
+                }
+                
+                const placeholder = document.createElement('div');
+                placeholder.className = 'placeholder';
+                placeholder.textContent = 'No output yet';
+                outputConsole.appendChild(placeholder);
+            }
+        });
+
         // Handle messages from the extension
         window.addEventListener('message', event => {
             const message = event.data;
             
-            if (message.command === 'refresh' && iframe) {
-                if (loadingOverlay) {
-                    loadingOverlay.classList.add('visible');
-                }
-                
-                // Update iframe src with a cache-busting parameter
-                const currentSrc = iframe.src.split('?')[0];
-                iframe.src = currentSrc + '?v=' + (message.counter || Date.now());
-            }
-            
-            if (message.command === 'updateOutput') {
-                // Remove placeholder if present
-                const placeholder = outputConsole.querySelector('.placeholder');
-                if (placeholder) {
-                    outputConsole.innerHTML = '';
-                }
-                
-                // Add new output lines
-                const lines = message.output.split('\\n');
-                lines.forEach(line => {
-                    if (line.trim() === '') return;
-                    
-                    const lineEl = document.createElement('div');
-                    lineEl.className = 'line';
-                    
-                    // Add error class if needed
-                    if (line.toLowerCase().includes('error')) {
-                        lineEl.classList.add('error');
+            switch (message.command) {
+                case 'output':
+                    if (outputConsole && message.text) {
+                        const line = document.createElement('div');
+                        line.className = message.text.toLowerCase().includes('error') ? 'line error' : 'line';
+                        line.textContent = message.text;
+                        
+                        if (outputConsole.querySelector('.placeholder')) {
+                            outputConsole.innerHTML = '';
+                        }
+                        
+                        outputConsole.appendChild(line);
+                        // Auto-scroll to bottom
+                        outputConsole.scrollTop = outputConsole.scrollHeight;
                     }
-                    
-                    // Escape HTML
-                    lineEl.textContent = line;
-                    outputConsole.appendChild(lineEl);
-                });
-                
-                // Scroll to bottom
-                outputConsole.scrollTop = outputConsole.scrollHeight;
+                    break;
+                case 'clearOutput':
+                    if (outputConsole) {
+                        while (outputConsole.firstChild) {
+                            outputConsole.removeChild(outputConsole.firstChild);
+                        }
+                    }
+                    break;
             }
         });
-        
-        // Setup resizable panels
+
+        // Device emulation
+        deviceButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                // Reset active state
+                deviceButtons.forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
+                
+                // Get dimensions from data attributes
+                const width = button.dataset.width || 'auto';
+                const height = button.dataset.height || 'auto';
+                
+                // Apply to iframe container
+                document.querySelector('.preview-frame-container').style.width = width;
+                document.querySelector('.preview-frame-container').style.height = height;
+            });
+        });
+
+        // Implement resizable panels
         let startY, startHeightTop, startHeightBottom;
         
         resizeHandle.addEventListener('mousedown', (e) => {
