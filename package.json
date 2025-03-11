@@ -1,7 +1,7 @@
 {
   "name": "deno-live-preview",
   "displayName": "Deno Live Preview",
-  "description": "Run Deno TypeScript files with live preview",
+  "description": "Live HTML, CSS, TypeScript preview powered by Deno runtime",
   "version": "1.0.0",
   "publisher": "TheMapleseedInc",
   "repository": {
@@ -12,35 +12,49 @@
     "vscode": "^1.60.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "preview",
+    "deno",
+    "html",
+    "css",
+    "typescript",
+    "live preview"
   ],
   "activationEvents": [
     "onLanguage:typescript",
     "onLanguage:html",
-    "onLanguage:css"
+    "onLanguage:css",
+    "onLanguage:javascript"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "deno-live-preview.start",
-        "title": "Start Deno Live Preview"
+        "title": "Start Live Preview"
       },
       {
         "command": "deno-live-preview.stop",
-        "title": "Stop Deno Live Preview"
+        "title": "Stop Live Preview"
       },
       {
         "command": "deno-live-preview.toggleAutoStart",
         "title": "Toggle Auto-Start Preview"
+      },
+      {
+        "command": "deno-live-preview.refresh",
+        "title": "Refresh Live Preview"
       }
     ],
     "viewsContainers": {
       "panel": [
         {
           "id": "deno-live-preview-container",
-          "title": "Deno Live Preview",
-          "icon": "$(preview)"
+          "title": "Live Preview",
+          "icon": "$(browser)"
         }
       ]
     },
@@ -54,17 +68,22 @@
       ]
     },
     "configuration": {
-      "title": "Deno Live Preview",
+      "title": "Live Preview (Deno)",
       "properties": {
         "denoLivePreview.port": {
           "type": "number",
           "default": 8000,
-          "description": "The port to use for the Deno server"
+          "description": "The port to use for the preview server"
         },
         "denoLivePreview.autoStart": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically start the preview when opening a Deno TypeScript file"
+          "description": "Automatically start the preview when opening supported files"
+        },
+        "denoLivePreview.liveReload": {
+          "type": "boolean", 
+          "default": true,
+          "description": "Automatically reload the preview when files change"
         }
       }
     },
@@ -72,7 +91,11 @@
       "commandPalette": [
         {
           "command": "deno-live-preview.toggleAutoStart",
-          "group": "Deno Live Preview"
+          "group": "Live Preview"
+        },
+        {
+          "command": "deno-live-preview.refresh",
+          "group": "Live Preview"
         }
       ],
       "view/title": [
@@ -80,12 +103,17 @@
           "command": "deno-live-preview.toggleAutoStart",
           "when": "view == deno-live-preview.preview",
           "group": "navigation"
+        },
+        {
+          "command": "deno-live-preview.refresh",
+          "when": "view == deno-live-preview.preview",
+          "group": "navigation"
         }
       ],
       "editor/title": [
         {
           "command": "deno-live-preview.start",
-          "when": "editorLangId =~ /(typescript|html|css)/",
+          "when": "editorLangId =~ /(typescript|html|css|javascript)/",
           "group": "navigation"
         }
       ]

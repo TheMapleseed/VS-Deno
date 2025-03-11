@@ -9,6 +9,8 @@ let previewProvider: DenoPreviewProvider | undefined;
 let statusBarItem: vscode.StatusBarItem;
 let projectRoot: string | undefined;
 let autoStartStatusBarItem: vscode.StatusBarItem;
+let fileWatcher: vscode.FileSystemWatcher | undefined;
+let debounceTimer: NodeJS.Timeout | undefined;
 
 // Track open preview for different file types
 let activePreviewFiles: Set<string> = new Set();
@@ -18,7 +20,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Create status bar item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.text = "$(play) Deno Live Preview";
+  statusBarItem.text = "$(browser) Live Preview";
   statusBarItem.command = "deno-live-preview.start";
   context.subscriptions.push(statusBarItem);
   
@@ -43,7 +45,8 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('deno-live-preview.start', startLivePreview),
     vscode.commands.registerCommand('deno-live-preview.stop', stopLivePreview),
-    vscode.commands.registerCommand('deno-live-preview.toggleAutoStart', toggleAutoStart)
+    vscode.commands.registerCommand('deno-live-preview.toggleAutoStart', toggleAutoStart),
+    vscode.commands.registerCommand('deno-live-preview.refresh', () => refreshPreview(true))
   );
 
   // Show status bar item when a relevant file is active
@@ -55,6 +58,31 @@ export function activate(context: vscode.ExtensionContext) {
       } else {
         statusBarItem.hide();
         autoStartStatusBarItem.hide();
+      }
+    })
+  );
+
+  // Auto-refresh preview when document is saved
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(document => {
+      if (isPreviewableFile(document) && activePreviewFiles.has(document.uri.fsPath)) {
+        refreshPreview(false);
+      }
+    })
+  );
+
+  // Set up content change tracking with debounce for hot-reload
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument(event => {
+      const document = event.document;
+      if (isPreviewableFile(document) && activePreviewFiles.has(document.uri.fsPath)) {
+        // Debounce the refresh to avoid too many refreshes when typing
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+        debounceTimer = setTimeout(() => {
+          refreshPreview(false);
+        }, 500); // Wait 500ms after last change before refreshing
       }
     })
   );
@@ -75,12 +103,23 @@ export function activate(context: vscode.ExtensionContext) {
   }
 }
 
+// Update the preview when changes are detected or manually requested
+function refreshPreview(showNotification: boolean = false) {
+  if (!previewProvider) return;
+  
+  if (showNotification) {
+    vscode.window.showInformationMessage('Refreshing Live Preview...');
+  }
+  
+  previewProvider.refreshPreview();
+}
+
 // Update the auto-start status bar based on current configuration
 function updateAutoStartStatusBar() {
   const config = vscode.workspace.getConfiguration('denoLivePreview');
   const autoStart = config.get<boolean>('autoStart') || false;
-  autoStartStatusBarItem.text = autoStart ? "$(check) Auto-Start: On" : "$(x) Auto-Start: Off";
-  autoStartStatusBarItem.tooltip = `Click to ${autoStart ? 'disable' : 'enable'} auto-start for Deno Live Preview`;
+  autoStartStatusBarItem.text = autoStart ? "$(check) Auto Preview: On" : "$(x) Auto Preview: Off";
+  autoStartStatusBarItem.tooltip = `Click to ${autoStart ? 'disable' : 'enable'} auto-start for Live Preview`;
 }
 
 // Toggle auto-start setting
@@ -96,13 +135,13 @@ async function toggleAutoStart() {
   
   // Show confirmation message
   const newState = !currentValue ? 'enabled' : 'disabled';
-  vscode.window.showInformationMessage(`Deno Live Preview auto-start ${newState}`);
+  vscode.window.showInformationMessage(`Live Preview auto-start ${newState}`);
 }
 
 // Check if a file is eligible for preview
 function isPreviewableFile(document: vscode.TextDocument): boolean {
   const fileType = document.languageId.toLowerCase();
-  return fileType === 'typescript' || fileType === 'html' || fileType === 'css';
+  return fileType === 'typescript' || fileType === 'html' || fileType === 'css' || fileType === 'javascript';
 }
 
 // Detect the root directory containing the project files
@@ -139,49 +178,125 @@ function generateStaticServerCode(filePath: string): string {
   }
   
   return `
-// Auto-generated Deno server for static file preview
+// Auto-generated Deno server for Live Preview
 import { serve } from "https://deno.land/std@0.204.0/http/server.ts";
 import { serveDir } from "https://deno.land/std@0.204.0/http/file_server.ts";
 
 const port = Number(Deno.env.get("DENO_PORT") || "8000");
 const rootDir = "${projectDir.replace(/\\/g, '\\\\')}";
 
-console.log(\`Starting Deno static file server for Live Preview...\`);
+console.log(\`Starting Live Preview server...\`);
 console.log(\`Serving files from: \${rootDir}\`);
 console.log(\`Server running at: http://localhost:\${port}/\`);
 ${fileExt === '.html' ? `console.log(\`Opening: ${fileName}\`);` : ''}
 
-await serve((req) => {
+// WebSocket connections for live reload
+const clients = new Set();
+
+serve(async (req) => {
   const url = new URL(req.url);
   
-  // Handle file specifically requested in the preview
-  ${fileExt === '.html' ? `
-  if (url.pathname === "/" || url.pathname === "") {
-    return serveDir(req, {
-      fsRoot: rootDir,
-      urlRoot: "",
-      showIndex: false,
-      showDirListing: false,
-      quiet: true,
+  // Handle WebSocket connections for live reload
+  if (url.pathname === "/_lr_ws") {
+    if (req.headers.get("upgrade") !== "websocket") {
+      return new Response(null, { status: 501 });
+    }
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    
+    socket.onopen = () => {
+      clients.add(socket);
+    };
+    
+    socket.onclose = () => {
+      clients.delete(socket);
+    };
+    
+    return response;
+  }
+  
+  // Handle live reload script request
+  if (url.pathname === "/_lr_script.js") {
+    return new Response(\`
+      // Live reload script
+      (function() {
+        const socket = new WebSocket(\`\${location.protocol === 'https:' ? 'wss:' : 'ws:'}//$\{location.host}/_lr_ws\`);
+        
+        socket.onmessage = function(event) {
+          if (event.data === "reload") {
+            console.log("[Live Preview] Reloading page...");
+            location.reload();
+          }
+        };
+        
+        socket.onclose = function() {
+          console.log("[Live Preview] Connection closed, attempting to reconnect...");
+          setTimeout(() => {
+            location.reload();
+          }, 2000);
+        };
+      })();
+    \`, {
       headers: {
-        "cache-control": "no-cache, no-store, must-revalidate",
-      }
+        "content-type": "application/javascript",
+      },
     });
   }
-  ` : `
-  // Serve all static files from the project directory
+  
+  // Inject live reload script to HTML files
+  if (url.pathname.endsWith(".html") || url.pathname === "/" || url.pathname === "") {
+    try {
+      const response = await serveDir(req, {
+        fsRoot: rootDir,
+        urlRoot: "",
+        showIndex: true,
+        quiet: true,
+      });
+      
+      // Only process HTML responses
+      if (response.headers.get("content-type")?.includes("text/html")) {
+        const originalHtml = await response.text();
+        
+        // Add the live reload script to the HTML
+        const injectedHtml = originalHtml.replace(
+          '</head>',
+          '<script src="/_lr_script.js"></script></head>'
+        );
+        
+        return new Response(injectedHtml, {
+          status: response.status,
+          headers: response.headers,
+        });
+      }
+      
+      return response;
+    } catch (e) {
+      console.error("Error serving HTML:", e);
+      return new Response("Server Error", { status: 500 });
+    }
+  }
+  
+  // Serve all other static files from the project directory
   return serveDir(req, {
     fsRoot: rootDir,
     urlRoot: "",
     showIndex: true,
-    showDirListing: false,
     quiet: true,
     headers: {
       "cache-control": "no-cache, no-store, must-revalidate",
     }
   });
-  `}
 }, { port });
+
+// Function to notify all clients to reload
+globalThis.notifyReload = () => {
+  for (const client of clients) {
+    try {
+      client.send("reload");
+    } catch (e) {
+      console.error("Failed to send reload command:", e);
+    }
+  }
+};
 `;
 }
 
@@ -225,8 +340,8 @@ async function startLivePreview() {
     let serverFilePath = filePath;
     let tempServerFile = false;
 
-    // For HTML or CSS files, or TS files without server code, create a temporary server
-    if (fileType === '.html' || fileType === '.css' || 
+    // For HTML, CSS, JS files, or TS files without server code, create a temporary server
+    if (fileType === '.html' || fileType === '.css' || fileType === '.js' || 
         (fileType === '.ts' && !fs.readFileSync(filePath, 'utf8').includes('serve('))) {
       const serverCode = generateStaticServerCode(filePath);
       if (serverCode) {
@@ -251,6 +366,7 @@ async function startLivePreview() {
       '--allow-net',
       '--allow-read',
       '--allow-env',
+      '--unstable',
       serverFilePath
     ], {
       env: { 
@@ -261,7 +377,7 @@ async function startLivePreview() {
     });
 
     // Update status bar
-    statusBarItem.text = "$(stop) Stop Deno Preview";
+    statusBarItem.text = "$(circle-slash) Stop Preview";
     statusBarItem.command = "deno-live-preview.stop";
 
     // Handle process output
@@ -280,7 +396,7 @@ async function startLivePreview() {
     });
 
     denoProcess.on('error', (error) => {
-      vscode.window.showErrorMessage(`Failed to start Deno: ${error.message}`);
+      vscode.window.showErrorMessage(`Failed to start server: ${error.message}`);
       stopLivePreview();
     });
 
@@ -299,6 +415,9 @@ async function startLivePreview() {
       stopLivePreview();
     });
 
+    // Set up file watcher for the project directory
+    setupFileWatcher(projectRoot || path.dirname(filePath));
+
     // Show preview
     if (previewProvider) {
       // Determine URL based on file type
@@ -316,17 +435,56 @@ async function startLivePreview() {
       vscode.commands.executeCommand('workbench.view.extension.deno-live-preview-container');
     }
 
-    vscode.window.showInformationMessage(`Deno preview started on port ${port}`);
+    vscode.window.showInformationMessage(`Live Preview started on port ${port}`);
   } catch (error) {
     if (error instanceof Error) {
-      vscode.window.showErrorMessage(`Failed to start Deno preview: ${error.message}`);
+      vscode.window.showErrorMessage(`Failed to start Live Preview: ${error.message}`);
     } else {
-      vscode.window.showErrorMessage(`Failed to start Deno preview: ${String(error)}`);
+      vscode.window.showErrorMessage(`Failed to start Live Preview: ${String(error)}`);
     }
   }
 }
 
+// Set up the file watcher for the project
+function setupFileWatcher(projectPath: string) {
+  // Clean up any existing file watcher
+  if (fileWatcher) {
+    fileWatcher.dispose();
+  }
+  
+  // Create a new file watcher for all relevant file types
+  fileWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(projectPath, '**/*.{html,css,js,ts}')
+  );
+  
+  // Handle file changes (debounced)
+  fileWatcher.onDidChange((uri) => {
+    // Only reload for files we care about and when the preview is active
+    const filePath = uri.fsPath;
+    const fileExt = path.extname(filePath).toLowerCase();
+    
+    if ((fileExt === '.html' || fileExt === '.css' || fileExt === '.js' || fileExt === '.ts') && denoProcess) {
+      // Notify the server to reload clients
+      try {
+        // Send a reload signal to the Deno process
+        if (denoProcess && denoProcess.stdin) {
+          console.log('Triggering live reload...');
+          // This will trigger reload in clients using our injected script
+          refreshPreview(false);
+        }
+      } catch (e) {
+        console.error('Error triggering reload:', e);
+      }
+    }
+  });
+}
+
 function stopLivePreview() {
+  if (fileWatcher) {
+    fileWatcher.dispose();
+    fileWatcher = undefined;
+  }
+  
   if (denoProcess) {
     // Kill the process
     if (process.platform === 'win32') {
@@ -340,7 +498,7 @@ function stopLivePreview() {
     activePreviewFiles.clear();
 
     // Update status bar
-    statusBarItem.text = "$(play) Deno Live Preview";
+    statusBarItem.text = "$(browser) Live Preview";
     statusBarItem.command = "deno-live-preview.start";
 
     // Clear preview
@@ -348,7 +506,7 @@ function stopLivePreview() {
       previewProvider.clearPreview();
     }
 
-    vscode.window.showInformationMessage('Deno preview stopped');
+    vscode.window.showInformationMessage('Live Preview stopped');
   }
 }
 
