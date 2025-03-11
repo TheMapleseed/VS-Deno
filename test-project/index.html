@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<!--
+  Deno Live Preview Test Project
+  Copyright (C) 2023
+  
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+  
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  GNU General Public License for more details.
+  
+  You should have received a copy of the GNU General Public License
+  along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Preview Test</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- Loading JavaScript files -->
+    <script src="app.js"></script>
+    <script src="deno-test.js"></script>
+</head>
+<body>
+    <header>
+        <h1>Deno Live Preview Test</h1>
+        <p class="subtitle">A comprehensive test for the VS Code extension</p>
+    </header>
+
+    <!-- Error console for diagnostics -->
+    <div id="error-console" class="error-console">
+        <h2>Error Log</h2>
+        <div id="error-log"></div>
+        <div class="error-actions">
+            <button id="clear-errors" class="btn">Clear Errors</button>
+            <button id="copy-errors" class="btn">Copy to Clipboard</button>
+        </div>
+    </div>
+
+    <main>
+        <section class="features">
+            <h2>Features to Test</h2>
+            <ul id="feature-list">
+                <li>HTML Live Reloading</li>
+                <li>CSS Hot Refresh</li>
+                <li>JavaScript Execution</li>
+                <li>Dynamic Content Generation</li>
+                <li>Responsive Design</li>
+            </ul>
+        </section>
+
+        <section class="interactive">
+            <h2>Interactive Elements</h2>
+            
+            <div class="control-panel">
+                <button id="theme-toggle" class="btn">Switch to Dark Theme</button>
+                <button id="add-item-button" class="btn">Add Item</button>
+                <button id="fetch-data" class="btn">Fetch Data</button>
+            </div>
+
+            <div class="input-group">
+                <input type="text" id="add-item-input" placeholder="Enter item text...">
+                <ul id="items-list"></ul>
+            </div>
+
+            <div class="output-panel">
+                <h3>Console Output</h3>
+                <div id="console-output"></div>
+            </div>
+
+            <div class="dynamic-content">
+                <h3>Dynamic Content</h3>
+                <div id="dynamic-container">
+                    <p>The content here will change when you click "Fetch Data".</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="responsive-test">
+            <h2>Responsive Design Test</h2>
+            <div class="responsive-grid">
+                <div class="grid-item">Item 1</div>
+                <div class="grid-item">Item 2</div>
+                <div class="grid-item">Item 3</div>
+                <div class="grid-item">Item 4</div>
+                <div class="grid-item">Item 5</div>
+                <div class="grid-item">Item 6</div>
+            </div>
+        </section>
+
+        <section class="image-test">
+            <h2>Image Loading Test</h2>
+            <div class="image-container">
+                <div class="image-wrapper">
+                    <img src="https://deno.land/logo.svg" alt="Deno Logo" id="test-image">
+                    <p>This is the Deno logo loaded from deno.land</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>Created to test the <strong>Deno Live Preview</strong> extension</p>
+        <p class="timestamp">Current time: <span id="current-time"></span></p>
+    </footer>
+
+    <!-- Timer functionality -->
+    <div class="timer">
+        Page has been open for <span id="seconds">0</span> seconds
+    </div>
+</body>
+</html> 

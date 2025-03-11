@@ -1,0 +1,41 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+// This module is browser compatible.
+
+import { parseMediaType } from "./parse_media_type.ts";
+import { type DBEntry } from "./_util.ts";
+import { db, type KeyOfDb } from "./_db.ts";
+
+/**
+ * Given a media type or header value, identify the encoding charset. If the
+ * charset cannot be determined, the function returns `undefined`.
+ *
+ * @example
+ * ```ts
+ * import { getCharset } from "https://deno.land/std@$STD_VERSION/media_types/get_charset.ts";
+ *
+ * getCharset("text/plain"); // `UTF-8`
+ * getCharset("application/foo"); // undefined
+ * getCharset("application/news-checkgroups"); // `US-ASCII`
+ * getCharset("application/news-checkgroups; charset=UTF-8"); // `UTF-8`
+ * ```
+ */
+export function getCharset(type: string): string | undefined {
+  try {
+    const [mediaType, params] = parseMediaType(type);
+    if (params && params["charset"]) {
+      return params["charset"];
+    }
+    const entry = db[mediaType as KeyOfDb] as DBEntry;
+    if (entry && entry.charset) {
+      return entry.charset;
+    }
+    if (mediaType.startsWith("text/")) {
+      return "UTF-8";
+    }
+  } catch {
+    // just swallow errors, returning undefined
+  }
+  return undefined;
+}
+
+// denoCacheMetadata={"headers":{"age":"17182281","cross-origin-opener-policy":"same-origin","date":"Sat, 24 Aug 2024 14:04:50 GMT","server-timing":"fetchSource;dur=12","cross-origin-resource-policy":"same-origin","x-amz-cf-id":"Q-INQpPUDRUiCHeeoR8ov6WPvxD6n69oTA88uIO_y62sqHmSg3WKSw==","last-modified":"Thu, 12 Oct 2023 22:56:03 GMT","x-cache":"Hit from cloudfront","referrer-policy":"strict-origin-when-cross-origin","access-control-allow-origin":"*","content-length":"1241","cache-control":"public, max-age=31536000, immutable","content-type":"application/typescript; charset=utf-8","etag":"\"1ef5772f80f5c259d7c244fad13993cf\"","x-frame-options":"DENY","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox","cross-origin-embedder-policy":"same-origin","strict-transport-security":"max-age=63072000; includeSubDomains; preload","via":"http/2 edgeproxy-h","server":"deno/gcp-us-east4","x-amz-cf-pop":"IAD61-P1","x-amz-replication-status":"COMPLETED","x-amz-version-id":"NlNVtFTKu5Wh2K2ii11zTEA0lW4tHCpA","accept-ranges":"bytes","vary":"Accept-Encoding, Origin","x-content-type-options":"nosniff","x-amz-server-side-encryption":"AES256"},"url":"https://deno.land/std@0.204.0/media_types/get_charset.ts","time":1741690570}

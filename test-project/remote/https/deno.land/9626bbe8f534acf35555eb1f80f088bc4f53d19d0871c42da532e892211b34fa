@@ -1,0 +1,48 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+import db from "./vendor/mime-db.v1.52.0.ts";
+import { type DBEntry, extensions } from "./_util.ts";
+
+export type KeyOfDb = keyof typeof db;
+
+/** A map of the media type for a given extension */
+export const types = new Map<string, KeyOfDb>();
+
+/** Internal function to populate the maps based on the Mime DB. */
+(function populateMaps() {
+  const preference = ["nginx", "apache", undefined, "iana"];
+
+  for (const type of Object.keys(db) as KeyOfDb[]) {
+    const mime = db[type] as DBEntry;
+    const exts = mime.extensions;
+
+    if (!exts || !exts.length) {
+      continue;
+    }
+
+    // @ts-ignore work around denoland/dnt#148
+    extensions.set(type, exts);
+
+    for (const ext of exts) {
+      const current = types.get(ext);
+      if (current) {
+        const from = preference.indexOf((db[current] as DBEntry).source);
+        const to = preference.indexOf(mime.source);
+
+        if (
+          current !== "application/octet-stream" &&
+          (from > to ||
+            // @ts-ignore work around denoland/dnt#148
+            (from === to && current.startsWith("application/")))
+        ) {
+          continue;
+        }
+      }
+
+      types.set(ext, type);
+    }
+  }
+})();
+
+export { db };
+
+// denoCacheMetadata={"headers":{"x-amz-version-id":"1pSepo9v7azSO6U9T8GWNfn7cEJKjB_.","x-cache":"Hit from cloudfront","accept-ranges":"bytes","age":"17182281","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox","etag":"\"3de8572be5a47640f6e45c79bb04ea80\"","referrer-policy":"strict-origin-when-cross-origin","content-length":"1275","server-timing":"fetchSource;dur=10","strict-transport-security":"max-age=63072000; includeSubDomains; preload","x-frame-options":"DENY","x-amz-cf-pop":"IAD61-P1","last-modified":"Thu, 12 Oct 2023 22:56:03 GMT","server":"deno/gcp-us-east4","content-type":"application/typescript; charset=utf-8","cross-origin-opener-policy":"same-origin","x-amz-server-side-encryption":"AES256","x-amz-cf-id":"k7XadJZTgDHRvjjrencnGFDFVM9WmcbjOdkCT7a4pvTdEc7yQIMVZQ==","x-content-type-options":"nosniff","cross-origin-embedder-policy":"same-origin","cross-origin-resource-policy":"same-origin","x-amz-replication-status":"COMPLETED","vary":"Accept-Encoding, Origin","access-control-allow-origin":"*","date":"Sat, 24 Aug 2024 14:04:50 GMT","cache-control":"public, max-age=31536000, immutable","via":"http/2 edgeproxy-h"},"url":"https://deno.land/std@0.204.0/media_types/_db.ts","time":1741690570}

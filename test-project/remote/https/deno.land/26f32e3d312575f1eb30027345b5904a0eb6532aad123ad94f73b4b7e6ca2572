@@ -1,0 +1,23 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+// This module is browser compatible.
+
+import { isWindows } from "./_os.ts";
+import { relative as posixRelative } from "./posix/relative.ts";
+import { relative as windowsRelative } from "./windows/relative.ts";
+
+/**
+ * Return the relative path from `from` to `to` based on current working directory.
+ *
+ * An example in windws, for instance:
+ *  from = 'C:\\orandea\\test\\aaa'
+ *  to = 'C:\\orandea\\impl\\bbb'
+ * The output of the function should be: '..\\..\\impl\\bbb'
+ *
+ * @param from path in current working directory
+ * @param to path in current working directory
+ */
+export function relative(from: string, to: string): string {
+  return isWindows ? windowsRelative(from, to) : posixRelative(from, to);
+}
+
+// denoCacheMetadata={"headers":{"x-cache":"Hit from cloudfront","age":"3937917","accept-ranges":"bytes","content-length":"788","via":"http/2 edgeproxy-h","x-amz-cf-pop":"IAD61-P1","x-amz-replication-status":"COMPLETED","x-amz-server-side-encryption":"AES256","x-amz-version-id":"3XH9p_vUIsjPJhtJNSFnFz7RsboiB.Io","x-content-type-options":"nosniff","content-type":"application/typescript; charset=utf-8","cross-origin-embedder-policy":"same-origin","cross-origin-resource-policy":"same-origin","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox","last-modified":"Thu, 12 Oct 2023 22:56:03 GMT","cache-control":"public, max-age=31536000, immutable","x-amz-cf-id":"16gMqyE3tqn7zZxO3Mw2EfannHWiOPePQ4FGklbWQxY8SYeYoRx0wQ==","strict-transport-security":"max-age=63072000; includeSubDomains; preload","cross-origin-opener-policy":"same-origin","date":"Fri, 24 Jan 2025 21:04:14 GMT","etag":"\"cdab81005b1958fe360ccee34789529e\"","x-frame-options":"DENY","access-control-allow-origin":"*","referrer-policy":"strict-origin-when-cross-origin","server":"deno/gcp-us-east4","server-timing":"fetchSource;dur=12","vary":"Accept-Encoding, Origin"},"url":"https://deno.land/std@0.204.0/path/relative.ts","time":1741690570}

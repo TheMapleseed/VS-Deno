@@ -1,0 +1,31 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+
+const encoder = new TextEncoder();
+
+function getTypeName(value: unknown): string {
+  const type = typeof value;
+  if (type !== "object") {
+    return type;
+  } else if (value === null) {
+    return "null";
+  } else {
+    return value?.constructor?.name ?? "object";
+  }
+}
+
+export function validateBinaryLike(source: unknown): Uint8Array {
+  if (typeof source === "string") {
+    return encoder.encode(source);
+  } else if (source instanceof Uint8Array) {
+    return source;
+  } else if (source instanceof ArrayBuffer) {
+    return new Uint8Array(source);
+  }
+  throw new TypeError(
+    `The input must be a Uint8Array, a string, or an ArrayBuffer. Received a value of the type ${
+      getTypeName(source)
+    }.`,
+  );
+}
+
+// denoCacheMetadata={"headers":{"content-type":"application/typescript; charset=utf-8","x-amz-server-side-encryption":"AES256","x-amz-version-id":"E0Jjx_8j4UOPf8w_qLfqQhwzr0YFJkca","x-cache":"Hit from cloudfront","referrer-policy":"strict-origin-when-cross-origin","x-frame-options":"DENY","strict-transport-security":"max-age=63072000; includeSubDomains; preload","content-length":"798","via":"http/2 edgeproxy-h","x-amz-cf-pop":"IAD61-P1","x-content-type-options":"nosniff","cross-origin-opener-policy":"same-origin","access-control-allow-origin":"*","server-timing":"fetchSource;dur=8","last-modified":"Thu, 12 Oct 2023 22:56:02 GMT","x-amz-cf-id":"Aa_SFMV83AoHSbnpei65mULx_CBtPSdcOKD5Du8gbSHGY4-6M9S7Zg==","accept-ranges":"bytes","age":"26170313","cross-origin-resource-policy":"same-origin","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox","date":"Sun, 12 May 2024 13:24:18 GMT","cross-origin-embedder-policy":"same-origin","cache-control":"public, max-age=31536000, immutable","server":"deno/gcp-us-east4","etag":"\"01d088a2433d26efe7fe07c1e3286654\"","vary":"Accept-Encoding, Origin","x-amz-replication-status":"COMPLETED"},"url":"https://deno.land/std@0.204.0/encoding/_util.ts","time":1741690570}

@@ -1,7 +1,3 @@
-GPLv3
-
-Copyright (c) 2025 The Mapleseed Inc.
-
 # GNU GENERAL PUBLIC LICENSE
 
 Version 3, 29 June 2007
@@ -22,4 +18,4 @@ You should have received a copy of the GNU General Public License along with thi
 
 ## Full License
 
-The full text of the GPL version 3 is available at: <https://www.gnu.org/licenses/gpl-3.0.txt>
+The full text of the GPL version 3 is available at: <https://www.gnu.org/licenses/gpl-3.0.txt> 

@@ -1,0 +1,12 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+// Copyright the Browserify authors. MIT License.
+// Ported from https://github.com/browserify/path-browserify/
+// This module is browser compatible.
+
+import { CHAR_FORWARD_SLASH } from "../_common/constants.ts";
+
+export function isPosixPathSeparator(code: number): boolean {
+  return code === CHAR_FORWARD_SLASH;
+}
+
+// denoCacheMetadata={"headers":{"via":"http/2 edgeproxy-h","content-length":"391","content-type":"application/typescript; charset=utf-8","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox","cross-origin-resource-policy":"same-origin","strict-transport-security":"max-age=63072000; includeSubDomains; preload","server":"deno/gcp-us-east4","date":"Tue, 14 Jan 2025 12:04:39 GMT","cache-control":"public, max-age=31536000, immutable","accept-ranges":"bytes","cross-origin-embedder-policy":"same-origin","etag":"\"62b6c81159c30718ed212d6f5c1c56e2\"","last-modified":"Thu, 12 Oct 2023 22:56:03 GMT","x-amz-cf-id":"GVYrTY7K1jmwPGR_XWWl2fBKNPbU6Zq25AMJKWtXn51Wj148UFOuLw==","referrer-policy":"strict-origin-when-cross-origin","x-amz-replication-status":"COMPLETED","x-amz-cf-pop":"IAD61-P1","x-amz-server-side-encryption":"AES256","x-cache":"Hit from cloudfront","x-frame-options":"DENY","x-content-type-options":"nosniff","vary":"Accept-Encoding, Origin","server-timing":"fetchSource;dur=6","x-amz-version-id":"pQT41guI6wz65mcR_4CGD39Z6GA1cINt","cross-origin-opener-policy":"same-origin","access-control-allow-origin":"*","age":"4834292"},"url":"https://deno.land/std@0.204.0/path/posix/_util.ts","time":1741690570}

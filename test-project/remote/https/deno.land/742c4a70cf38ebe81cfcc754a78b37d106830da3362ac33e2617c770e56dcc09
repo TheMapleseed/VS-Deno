@@ -1,0 +1,35 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+// This module is browser compatible.
+
+/**
+ * Filters the given array, removing all elements that do not match the given predicate
+ * **in place. This means `array` will be modified!**.
+ */
+export function filterInPlace<T>(
+  array: Array<T>,
+  predicate: (el: T) => boolean,
+): Array<T> {
+  let outputIndex = 0;
+
+  for (const cur of array) {
+    if (!predicate(cur)) {
+      continue;
+    }
+
+    array[outputIndex] = cur;
+    outputIndex += 1;
+  }
+
+  array.splice(outputIndex);
+
+  return array;
+}
+
+/**
+ * Produces a random number between the inclusive `lower` and `upper` bounds.
+ */
+export function randomInteger(lower: number, upper: number) {
+  return lower + Math.floor(Math.random() * (upper - lower + 1));
+}
+
+// denoCacheMetadata={"headers":{"x-amz-cf-id":"_OwyFEan2AiuYKI33fiTxYyyrwN47J67_4seHUXAcDwl9KF3tDWeCA==","content-length":"790","cross-origin-opener-policy":"same-origin","cross-origin-resource-policy":"same-origin","age":"23719736","via":"http/2 edgeproxy-h","x-frame-options":"DENY","etag":"\"5e972f466c427b295a98c28f4010e424\"","x-amz-cf-pop":"IAD61-P1","content-type":"application/typescript; charset=utf-8","date":"Sun, 09 Jun 2024 22:07:15 GMT","strict-transport-security":"max-age=63072000; includeSubDomains; preload","vary":"Accept-Encoding, Origin","x-amz-replication-status":"COMPLETED","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox","x-amz-server-side-encryption":"AES256","accept-ranges":"bytes","server-timing":"fetchSource;dur=6","x-amz-version-id":"wyY.cYKsL9AH43fUZtG19D3A8qGJyYNx","last-modified":"Thu, 12 Oct 2023 22:56:01 GMT","cache-control":"public, max-age=31536000, immutable","cross-origin-embedder-policy":"same-origin","server":"deno/gcp-us-east4","x-cache":"Hit from cloudfront","referrer-policy":"strict-origin-when-cross-origin","access-control-allow-origin":"*","x-content-type-options":"nosniff"},"url":"https://deno.land/std@0.204.0/collections/_utils.ts","time":1741690570}

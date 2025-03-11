@@ -1,0 +1,154 @@
+// Copyright 2018-2023 the Deno authors. All rights reserved. MIT license.
+
+/** Supporting functions for media_types that do not make part of the public
+ * API.
+ *
+ * @module
+ * @private
+ */
+export interface DBEntry {
+  source: string;
+  compressible?: boolean;
+  charset?: string;
+  extensions?: string[];
+}
+
+/** A map of extensions for a given media type. */
+export const extensions = new Map<string, string[]>();
+
+export function consumeToken(v: string): [token: string, rest: string] {
+  const notPos = indexOf(v, isNotTokenChar);
+  if (notPos === -1) {
+    return [v, ""];
+  }
+  if (notPos === 0) {
+    return ["", v];
+  }
+  return [v.slice(0, notPos), v.slice(notPos)];
+}
+
+export function consumeValue(v: string): [value: string, rest: string] {
+  if (!v) {
+    return ["", v];
+  }
+  if (v[0] !== `"`) {
+    return consumeToken(v);
+  }
+  let value = "";
+  for (let i = 1; i < v.length; i++) {
+    const r = v[i];
+    if (r === `"`) {
+      return [value, v.slice(i + 1)];
+    }
+    if (r === "\\" && i + 1 < v.length && isTSpecial(v[i + 1])) {
+      value += v[i + 1];
+      i++;
+      continue;
+    }
+    if (r === "\r" || r === "\n") {
+      return ["", v];
+    }
+    value += v[i];
+  }
+  return ["", v];
+}
+
+export function consumeMediaParam(
+  v: string,
+): [key: string, value: string, rest: string] {
+  let rest = v.trimStart();
+  if (!rest.startsWith(";")) {
+    return ["", "", v];
+  }
+  rest = rest.slice(1);
+  rest = rest.trimStart();
+  let param: string;
+  [param, rest] = consumeToken(rest);
+  param = param.toLowerCase();
+  if (!param) {
+    return ["", "", v];
+  }
+  rest = rest.slice(1);
+  rest = rest.trimStart();
+  const [value, rest2] = consumeValue(rest);
+  if (value === "" && rest2 === rest) {
+    return ["", "", v];
+  }
+  rest = rest2;
+  return [param, value, rest];
+}
+
+export function decode2331Encoding(v: string): string | undefined {
+  const sv = v.split(`'`, 3);
+  if (sv.length !== 3) {
+    return undefined;
+  }
+  const charset = sv[0].toLowerCase();
+  if (!charset) {
+    return undefined;
+  }
+  if (charset !== "us-ascii" && charset !== "utf-8") {
+    return undefined;
+  }
+  const encv = decodeURI(sv[2]);
+  if (!encv) {
+    return undefined;
+  }
+  return encv;
+}
+
+function indexOf<T>(s: Iterable<T>, fn: (s: T) => boolean): number {
+  let i = -1;
+  for (const v of s) {
+    i++;
+    if (fn(v)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+export function isIterator<T>(obj: unknown): obj is Iterable<T> {
+  if (obj === null || obj === undefined) {
+    return false;
+  }
+  // deno-lint-ignore no-explicit-any
+  return typeof (obj as any)[Symbol.iterator] === "function";
+}
+
+export function isToken(s: string): boolean {
+  if (!s) {
+    return false;
+  }
+  return indexOf(s, isNotTokenChar) < 0;
+}
+
+function isNotTokenChar(r: string): boolean {
+  return !isTokenChar(r);
+}
+
+function isTokenChar(r: string): boolean {
+  const code = r.charCodeAt(0);
+  return code > 0x20 && code < 0x7f && !isTSpecial(r);
+}
+
+function isTSpecial(r: string): boolean {
+  return `()<>@,;:\\"/[]?=`.includes(r[0]);
+}
+
+const CHAR_CODE_SPACE = " ".charCodeAt(0);
+const CHAR_CODE_TILDE = "~".charCodeAt(0);
+
+export function needsEncoding(s: string): boolean {
+  for (const b of s) {
+    const charCode = b.charCodeAt(0);
+    if (
+      (charCode < CHAR_CODE_SPACE || charCode > CHAR_CODE_TILDE) && b !== "\t"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// denoCacheMetadata={"headers":{"cache-control":"public, max-age=31536000, immutable","content-length":"3375","strict-transport-security":"max-age=63072000; includeSubDomains; preload","x-amz-replication-status":"COMPLETED","x-cache":"Hit from cloudfront","x-content-type-options":"nosniff","vary":"Accept-Encoding, Origin","x-amz-cf-id":"434UqMqi0DHYrlR7ejm9JnNsvCspMQIehlWQ2DtxWUDIbzMZhTtOqg==","content-type":"application/typescript; charset=utf-8","access-control-allow-origin":"*","etag":"\"9227c75a4a23ff794875ec93473997bf\"","server-timing":"fetchSource;dur=4","x-amz-cf-pop":"IAD61-P1","via":"http/2 edgeproxy-h","server":"deno/gcp-us-east4","x-amz-server-side-encryption":"AES256","referrer-policy":"strict-origin-when-cross-origin","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox","date":"Fri, 23 Aug 2024 12:12:11 GMT","cross-origin-embedder-policy":"same-origin","x-frame-options":"DENY","cross-origin-opener-policy":"same-origin","x-amz-version-id":"NdFT59DeNI951RL134L.Xqq46ht5WcCQ","accept-ranges":"bytes","age":"17275440","cross-origin-resource-policy":"same-origin","last-modified":"Thu, 12 Oct 2023 22:56:03 GMT"},"url":"https://deno.land/std@0.204.0/media_types/_util.ts","time":1741690570}
